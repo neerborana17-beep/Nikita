@@ -47,16 +47,6 @@ def get_chat_history():
         
     return history, chat_data_for_frontend
 
-@app.route("/")
-def index():
-    return render_template("index.html")
-
-# फ्रंटएंड पर पुरानी चैट दिखाने के लिए
-@app.route("/get_history", methods=["GET"])
-def fetch_history():
-    _, chat_data_for_frontend = get_chat_history()
-    return jsonify(chat_data_for_frontend)
-
 @app.route("/chat", methods=["POST"])
 def chat():
     user_message = request.json.get("message")
@@ -95,9 +85,10 @@ def chat():
         })
         
         return jsonify({"reply": nikita_reply})
-        except Exception as e:
-        # यह असली एरर को आपकी स्क्रीन पर प्रिंट कर देगा
+    except Exception as e:
+        # असली एरर स्क्रीन पर भेजने के लिए
         return jsonify({"reply": f"CP, mujhe ye error aa raha hai: {str(e)}"})
+    
 
 # रैंडम मैसेज चेक करने के लिए
 @app.route("/poll_messages", methods=["GET"])
