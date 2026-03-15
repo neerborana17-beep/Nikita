@@ -95,8 +95,9 @@ def chat():
         })
         
         return jsonify({"reply": nikita_reply})
-    except Exception as e:
-        return jsonify({"reply": "Mera net mar gaya hai yaar... baad me text kar."})
+        except Exception as e:
+        # यह असली एरर को आपकी स्क्रीन पर प्रिंट कर देगा
+        return jsonify({"reply": f"CP, mujhe ye error aa raha hai: {str(e)}"})
 
 # रैंडम मैसेज चेक करने के लिए
 @app.route("/poll_messages", methods=["GET"])
