@@ -30,49 +30,65 @@ Reply strictly like a Gen-Z Indian girl.
 """
 
 # MongoDB Connection Setup
-client = MongoClient(MONGO_URI)
-db = client["nikita_ai_db"]
-messages_collection = db["chat_history"]
+try:
+    client = MongoClient(MONGO_URI)
+    db = client["nikita_ai_db"]
+    messages_collection = db["chat_history"]
+except Exception as e:
+    print(f"MongoDB connection error: {e}")
 
 # पुरानी बातचीत (Memory) निकालने का फंक्शन
 def get_chat_history():
-    docs = messages_collection.find().sort("timestamp", 1)
-    history = []
-    chat_data_for_frontend = []
-    
-    for doc in docs:
-        role = "user" if doc['sender'] == "CP" else "model"
-        history.append({"role": role, "parts": [doc['message']]})
-        chat_data_for_frontend.append({"sender": doc['sender'], "message": doc['message']})
+    try:
+        docs = messages_collection.find().sort("timestamp", 1)
+        history = []
+        chat_data_for_frontend = []
         
-    return history, chat_data_for_frontend
+        for doc in docs:
+            role = "user" if doc.get('sender') == "CP" else "model"
+            history.append({"role": role, "parts": [doc.get('message', '')]})
+            chat_data_for_frontend.append({"sender": doc.get('sender'), "message": doc.get('message', '')})
+            
+        return history, chat_data_for_frontend
+    except Exception:
+        return [], []
+
+@app.route("/")
+def index():
+    return render_template("index.html")
+
+# फ्रंटएंड पर पुरानी चैट दिखाने के लिए
+@app.route("/get_history", methods=["GET"])
+def fetch_history():
+    _, chat_data_for_frontend = get_chat_history()
+    return jsonify(chat_data_for_frontend)
 
 @app.route("/chat", methods=["POST"])
 def chat():
-    user_message = request.json.get("message")
-    tz = pytz.timezone('Asia/Kolkata')
-    current_time_obj = datetime.now(tz)
-    
-    # 1. CP का मैसेज MongoDB में सेव करें
-    messages_collection.insert_one({
-        "sender": "CP", 
-        "message": user_message, 
-        "timestamp": current_time_obj, 
-        "is_read": True
-    })
-
-    # 2. पुरानी याददाश्त के साथ AI को मैसेज भेजें
-    history, _ = get_chat_history()
-    model = genai.GenerativeModel(model_name="gemini-1.5-flash", system_instruction=system_instruction)
-    
-    # आखिरी मैसेज (जो अभी डाला) उसे हटाकर नया मैसेज भेजते हैं
-    if history and history[-1]["role"] == "user":
-        history.pop() 
-    
-    chat_session = model.start_chat(history=history)
-    current_time_str = current_time_obj.strftime("%H:%M")
-    
     try:
+        user_message = request.json.get("message")
+        tz = pytz.timezone('Asia/Kolkata')
+        current_time_obj = datetime.now(tz)
+        
+        # 1. CP का मैसेज MongoDB में सेव करें
+        messages_collection.insert_one({
+            "sender": "CP", 
+            "message": user_message, 
+            "timestamp": current_time_obj, 
+            "is_read": True
+        })
+
+        # 2. पुरानी याददाश्त के साथ AI को मैसेज भेजें
+        history, _ = get_chat_history()
+        model = genai.GenerativeModel(model_name="gemini-1.5-flash", system_instruction=system_instruction)
+        
+        # आखिरी मैसेज (जो अभी डाला) उसे हटाकर नया मैसेज भेजते हैं
+        if history and history[-1]["role"] == "user":
+            history.pop() 
+        
+        chat_session = model.start_chat(history=history)
+        current_time_str = current_time_obj.strftime("%H:%M")
+        
         response = chat_session.send_message(f"[Time: {current_time_str}] {user_message}")
         nikita_reply = response.text.strip()
         
@@ -85,34 +101,37 @@ def chat():
         })
         
         return jsonify({"reply": nikita_reply})
+        
     except Exception as e:
-        # असली एरर स्क्रीन पर भेजने के लिए
+        # अगर कोई एरर आता है, तो निकिता खुद स्क्रीन पर बताएगी
         return jsonify({"reply": f"CP, mujhe ye error aa raha hai: {str(e)}"})
-    
 
 # रैंडम मैसेज चेक करने के लिए
 @app.route("/poll_messages", methods=["GET"])
 def poll_messages():
-    # जो मैसेज CP ने नहीं पढ़े हैं (is_read=False)
-    docs = messages_collection.find({"sender": "Nikita", "is_read": False}).sort("timestamp", 1)
-    
-    new_messages = []
-    for doc in docs:
-        new_messages.append(doc['message'])
-        # मैसेज को 'read' मार्क कर दो
-        messages_collection.update_one({"_id": doc["_id"]}, {"$set": {"is_read": True}})
+    try:
+        # जो मैसेज CP ने नहीं पढ़े हैं (is_read=False)
+        docs = messages_collection.find({"sender": "Nikita", "is_read": False}).sort("timestamp", 1)
         
-    return jsonify({"new_messages": new_messages})
+        new_messages = []
+        for doc in docs:
+            new_messages.append(doc['message'])
+            # मैसेज को 'read' मार्क कर दो
+            messages_collection.update_one({"_id": doc["_id"]}, {"$set": {"is_read": True}})
+            
+        return jsonify({"new_messages": new_messages})
+    except Exception:
+        return jsonify({"new_messages": []})
 
 # बैकग्राउंड जॉब (हर 5 मिनट में)
 @scheduler.task('interval', id='random_msg_task', minutes=5)
 def generate_random_message():
     if random.random() < 0.30: # 30% चांस
-        history, _ = get_chat_history()
-        model = genai.GenerativeModel(model_name="gemini-1.5-flash", system_instruction=system_instruction)
-        chat_session = model.start_chat(history=history)
-        
         try:
+            history, _ = get_chat_history()
+            model = genai.GenerativeModel(model_name="gemini-1.5-flash", system_instruction=system_instruction)
+            chat_session = model.start_chat(history=history)
+            
             prompt = "Act naturally. You are missing CP or want his attention, or just want to annoy him. Send a short, random text message to start a conversation. Do not reply to any previous prompt."
             response = chat_session.send_message(prompt)
             random_reply = response.text.strip()
