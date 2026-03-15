@@ -1,0 +1,71 @@
+body {
+    font-family: Arial, sans-serif;
+    background-color: #ece5dd;
+    margin: 0;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 100vh;
+}
+.chat-container {
+    width: 350px;
+    height: 600px;
+    background: #fff;
+    border-radius: 10px;
+    box-shadow: 0 4px 10px rgba(0,0,0,0.2);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+.chat-header {
+    background: #075e54;
+    color: white;
+    padding: 15px;
+    text-align: center;
+}
+.chat-header h2 { margin: 0; font-size: 18px; }
+.chat-header p { margin: 5px 0 0; font-size: 12px; opacity: 0.8; }
+.chat-box {
+    flex: 1;
+    padding: 15px;
+    overflow-y: auto;
+    background: #efe7dd;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+.message {
+    padding: 10px;
+    border-radius: 10px;
+    max-width: 75%;
+    word-wrap: break-word;
+}
+.user-message {
+    background: #dcf8c6;
+    align-self: flex-end;
+}
+.nikita-message {
+    background: #fff;
+    align-self: flex-start;
+}
+.input-area {
+    display: flex;
+    padding: 10px;
+    background: #f0f0f0;
+}
+.input-area input {
+    flex: 1;
+    padding: 10px;
+    border: none;
+    border-radius: 20px;
+    outline: none;
+}
+.input-area button {
+    background: #128c7e;
+    color: white;
+    border: none;
+    padding: 10px 15px;
+    margin-left: 10px;
+    border-radius: 50%;
+    cursor: pointer;
+}

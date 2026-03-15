@@ -1,0 +1,8 @@
+Flask==3.0.0
+google-generativeai
+gunicorn
+python-dotenv
+Flask-APScheduler
+pytz
+pymongo
+dnspython
