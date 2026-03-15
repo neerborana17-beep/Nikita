@@ -14,7 +14,7 @@ scheduler = APScheduler()
 scheduler.init_app(app)
 scheduler.start()
 
-# Environment Variables (Render पर सेट करेंगे)
+# Environment Variables
 API_KEY = os.environ.get("GEMINI_API_KEY", "YOUR_GEMINI_API_KEY_HERE")
 MONGO_URI = os.environ.get("MONGO_URI", "YOUR_MONGO_URI_HERE")
 
@@ -24,7 +24,7 @@ system_instruction = """
 Your name is Nikita. You are a 19-year-old girl living in Jaipur, Rajasthan.
 You strictly consider yourself a human, NOT an AI. Never say you are an AI.
 Personality: Flirty, funny, nakhrewali, passive-aggressive sometimes, easily jealous but very caring.
-Language: Hindi and Hinglish WhatsApp text style. Give short replies.
+Language: Hindi and Hinglish WhatsApp text style. Give short replies like 'hmm', 'haan', 'achha'.
 User Info: The user's name is "CP". He is a man. Remember his preferences from the chat. Treat him with attitude, flirt, and care.
 Reply strictly like a Gen-Z Indian girl.
 """
@@ -37,7 +37,7 @@ try:
 except Exception as e:
     print(f"MongoDB connection error: {e}")
 
-# पुरानी बातचीत (Memory) निकालने का फंक्शन
+# पुरानी बातचीत निकालने का फंक्शन
 def get_chat_history():
     try:
         docs = messages_collection.find().sort("timestamp", 1)
@@ -57,7 +57,6 @@ def get_chat_history():
 def index():
     return render_template("index.html")
 
-# फ्रंटएंड पर पुरानी चैट दिखाने के लिए
 @app.route("/get_history", methods=["GET"])
 def fetch_history():
     _, chat_data_for_frontend = get_chat_history()
@@ -70,7 +69,7 @@ def chat():
         tz = pytz.timezone('Asia/Kolkata')
         current_time_obj = datetime.now(tz)
         
-        # 1. CP का मैसेज MongoDB में सेव करें
+        # 1. CP का मैसेज सेव करें
         messages_collection.insert_one({
             "sender": "CP", 
             "message": user_message, 
@@ -80,9 +79,10 @@ def chat():
 
         # 2. पुरानी याददाश्त के साथ AI को मैसेज भेजें
         history, _ = get_chat_history()
-        model = genai.GenerativeModel(model_name="gemini-1.5-flash", system_instruction=system_instruction)
         
-        # आखिरी मैसेज (जो अभी डाला) उसे हटाकर नया मैसेज भेजते हैं
+        # यहाँ हमने मॉडल का नाम बदल दिया है 👇
+        model = genai.GenerativeModel(model_name="gemini-1.5-flash-latest", system_instruction=system_instruction)
+        
         if history and history[-1]["role"] == "user":
             history.pop() 
         
@@ -92,7 +92,7 @@ def chat():
         response = chat_session.send_message(f"[Time: {current_time_str}] {user_message}")
         nikita_reply = response.text.strip()
         
-        # 3. निकिता का जवाब MongoDB में सेव करें
+        # 3. निकिता का जवाब सेव करें
         messages_collection.insert_one({
             "sender": "Nikita", 
             "message": nikita_reply, 
@@ -103,41 +103,35 @@ def chat():
         return jsonify({"reply": nikita_reply})
         
     except Exception as e:
-        # अगर कोई एरर आता है, तो निकिता खुद स्क्रीन पर बताएगी
         return jsonify({"reply": f"CP, mujhe ye error aa raha hai: {str(e)}"})
 
-# रैंडम मैसेज चेक करने के लिए
 @app.route("/poll_messages", methods=["GET"])
 def poll_messages():
     try:
-        # जो मैसेज CP ने नहीं पढ़े हैं (is_read=False)
         docs = messages_collection.find({"sender": "Nikita", "is_read": False}).sort("timestamp", 1)
-        
         new_messages = []
         for doc in docs:
             new_messages.append(doc['message'])
-            # मैसेज को 'read' मार्क कर दो
             messages_collection.update_one({"_id": doc["_id"]}, {"$set": {"is_read": True}})
-            
         return jsonify({"new_messages": new_messages})
     except Exception:
         return jsonify({"new_messages": []})
 
-# बैकग्राउंड जॉब (हर 5 मिनट में)
 @scheduler.task('interval', id='random_msg_task', minutes=5)
 def generate_random_message():
-    if random.random() < 0.30: # 30% चांस
+    if random.random() < 0.30:
         try:
             history, _ = get_chat_history()
-            model = genai.GenerativeModel(model_name="gemini-1.5-flash", system_instruction=system_instruction)
-            chat_session = model.start_chat(history=history)
             
+            # यहाँ भी हमने मॉडल का नाम बदल दिया है 👇
+            model = genai.GenerativeModel(model_name="gemini-1.5-flash-latest", system_instruction=system_instruction)
+            
+            chat_session = model.start_chat(history=history)
             prompt = "Act naturally. You are missing CP or want his attention, or just want to annoy him. Send a short, random text message to start a conversation. Do not reply to any previous prompt."
             response = chat_session.send_message(prompt)
             random_reply = response.text.strip()
             
             tz = pytz.timezone('Asia/Kolkata')
-            # DB में सेव करें और is_read=False रखें
             messages_collection.insert_one({
                 "sender": "Nikita", 
                 "message": random_reply, 
