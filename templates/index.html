@@ -1,24 +1,162 @@
 <!DOCTYPE html>
-<html lang="hi">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Chat with Nikita</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <title>Zayra Voice AI</title>
+    <style>
+        body {
+            background-color: #0d1117;
+            color: #c9d1d9;
+            font-family: Arial, sans-serif;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            overflow: hidden;
+        }
+        .container {
+            text-align: center;
+        }
+        h1 {
+            color: #ff69b4;
+            font-size: 2rem;
+            margin-bottom: 10px;
+        }
+        p#status {
+            color: #8b949e;
+            font-size: 1.2rem;
+            margin-bottom: 40px;
+            height: 30px;
+        }
+        /* J.A.R.V.I.S style orb/mic button */
+        .mic-btn {
+            width: 150px;
+            height: 150px;
+            border-radius: 50%;
+            background: radial-gradient(circle, #ff69b4 0%, #d10068 100%);
+            border: none;
+            cursor: pointer;
+            box-shadow: 0 0 30px #ff69b4;
+            transition: all 0.3s ease;
+            outline: none;
+        }
+        .mic-btn:active {
+            transform: scale(0.95);
+            box-shadow: 0 0 50px #ff69b4;
+        }
+        /* Recording Animation */
+        .recording {
+            animation: pulse 1s infinite alternate;
+        }
+        @keyframes pulse {
+            0% { box-shadow: 0 0 30px #ff69b4; transform: scale(1); }
+            100% { box-shadow: 0 0 70px #ff69b4, 0 0 100px #ff1493; transform: scale(1.1); }
+        }
+        /* Thinking Animation */
+        .thinking {
+            background: radial-gradient(circle, #00f2fe 0%, #4facfe 100%);
+            box-shadow: 0 0 30px #00f2fe;
+            animation: spin 2s linear infinite;
+        }
+        @keyframes spin {
+            100% { transform: rotate(360deg); }
+        }
+    </style>
 </head>
 <body>
-    <div class="chat-container">
-        <div class="chat-header">
-            <h2>Nikita ❤️</h2>
-            <p>Online</p>
-        </div>
-        <div class="chat-box" id="chat-box">
-            </div>
-        <div class="input-area">
-            <input type="text" id="user-input" placeholder="Message type kar...">
-            <button onclick="sendMessage()">Send</button>
-        </div>
-    </div>
-    <script src="{{ url_for('static', filename='script.js') }}"></script>
+
+<div class="container">
+    <h1>Zayra Voice AI</h1>
+    <p id="status">Tap and hold to talk to Zayra...</p>
+    
+    <button id="micBtn" class="mic-btn"></button>
+</div>
+
+<script>
+    let mediaRecorder;
+    let audioChunks = [];
+    const micBtn = document.getElementById('micBtn');
+    const statusText = document.getElementById('status');
+    let isRecording = false;
+
+    // Get Microphone Access
+    navigator.mediaDevices.getUserMedia({ audio: true })
+        .then(stream => {
+            mediaRecorder = new MediaRecorder(stream);
+
+            mediaRecorder.ondataavailable = event => {
+                audioChunks.push(event.data);
+            };
+
+            mediaRecorder.onstop = sendAudioToServer;
+        })
+        .catch(error => {
+            statusText.innerText = "Microphone access denied! 🥺";
+            statusText.style.color = "red";
+        });
+
+    // Touch / Mouse Events for "Hold to Talk"
+    micBtn.addEventListener('mousedown', startRecording);
+    micBtn.addEventListener('mouseup', stopRecording);
+    micBtn.addEventListener('touchstart', (e) => { e.preventDefault(); startRecording(); });
+    micBtn.addEventListener('touchend', stopRecording);
+
+    function startRecording() {
+        if (!mediaRecorder) return;
+        audioChunks = [];
+        mediaRecorder.start();
+        isRecording = true;
+        micBtn.classList.add('recording');
+        statusText.innerText = "Listening... 🎤";
+    }
+
+    function stopRecording() {
+        if (!mediaRecorder || !isRecording) return;
+        mediaRecorder.stop();
+        isRecording = false;
+        micBtn.classList.remove('recording');
+        micBtn.classList.add('thinking');
+        statusText.innerText = "Zayra is thinking... 🧠";
+    }
+
+    async function sendAudioToServer() {
+        const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+        const formData = new FormData();
+        formData.append('audio', audioBlob, 'recording.webm');
+
+        try {
+            const response = await fetch('/voice_chat', {
+                method: 'POST',
+                body: formData
+            });
+
+            if (response.ok) {
+                // Play Zayra's Voice
+                statusText.innerText = "Zayra is speaking... 👄";
+                const audioBlob = await response.blob();
+                const audioUrl = URL.createObjectURL(audioBlob);
+                const audio = new Audio(audioUrl);
+                
+                audio.play();
+                
+                audio.onended = () => {
+                    statusText.innerText = "Tap and hold to talk...";
+                    micBtn.classList.remove('thinking');
+                };
+            } else {
+                statusText.innerText = "Error getting response 🥺";
+                micBtn.classList.remove('thinking');
+            }
+        } catch (error) {
+            statusText.innerText = "Network Error 🥺";
+            micBtn.classList.remove('thinking');
+        }
+    }
+</script>
+
 </body>
-</html>
+    </html>
+    
