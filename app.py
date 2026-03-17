@@ -1,145 +1,171 @@
-import os
-import random
-from flask import Flask, render_template, request, jsonify
-import google.generativeai as genai
-from datetime import datetime
-import pytz
-from flask_apscheduler import APScheduler
+import os, requests, json, pytz, certifi
+from flask import Flask, render_template, request, jsonify, send_file
 from pymongo import MongoClient
+from datetime import datetime
+from io import BytesIO
 
 app = Flask(__name__)
 
-# Scheduler Setup (बैकग्राउंड में रैंडम मैसेज के लिए)
-scheduler = APScheduler()
-scheduler.init_app(app)
-scheduler.start()
+# --- Configuration ---
+API_KEY = os.getenv("GROQ_API_KEY") 
+MONGO_URI = os.getenv("MONGO_URI")
+ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY") 
+VOICE_ID = os.getenv("VOICE_ID", "21m00Tcm4TlvDq8ikWAM") # Default voice: Rachel (Female)
 
-# Environment Variables
-API_KEY = os.environ.get("GEMINI_API_KEY", "YOUR_GEMINI_API_KEY_HERE")
-MONGO_URI = os.environ.get("MONGO_URI", "YOUR_MONGO_URI_HERE")
-
-# Gemini API Setup
-genai.configure(api_key=API_KEY)
-system_instruction = """
-Your name is Nikita. You are a 19-year-old girl living in Jaipur, Rajasthan.
-You strictly consider yourself a human, NOT an AI. Never say you are an AI.
-Personality: Flirty, funny, nakhrewali, passive-aggressive sometimes, easily jealous but very caring.
-Language: Hindi and Hinglish WhatsApp text style. Give short replies like 'hmm', 'haan', 'achha'.
-User Info: The user's name is "CP". He is a man. Remember his preferences from the chat. Treat him with attitude, flirt, and care.
-Reply strictly like a Gen-Z Indian girl.
-"""
-
-# MongoDB Connection Setup
+# --- MongoDB Setup ---
 try:
-    client = MongoClient(MONGO_URI)
-    db = client["nikita_ai_db"]
-    messages_collection = db["chat_history"]
+    client = MongoClient(MONGO_URI, tlsCAFile=certifi.where(), serverSelectionTimeoutMS=3000)
+    db = client['neer_db'] 
+    chat_col = db['history']
+    memory_col = db['dynamic_memories']
+    mongo_status = True
+    print("MongoDB Connected Successfully! ❤️")
 except Exception as e:
-    print(f"MongoDB connection error: {e}")
+    mongo_status = False
+    print("MongoDB Connection Failed!")
 
-# पुरानी बातचीत निकालने का फंक्शन
-def get_chat_history():
-    try:
-        docs = messages_collection.find().sort("timestamp", 1)
-        history = []
-        chat_data_for_frontend = []
-        
-        for doc in docs:
-            role = "user" if doc.get('sender') == "CP" else "model"
-            history.append({"role": role, "parts": [doc.get('message', '')]})
-            chat_data_for_frontend.append({"sender": doc.get('sender'), "message": doc.get('message', '')})
-            
-        return history, chat_data_for_frontend
-    except Exception:
-        return [], []
-
-@app.route("/")
-def index():
-    return render_template("index.html")
-
-@app.route("/get_history", methods=["GET"])
-def fetch_history():
-    _, chat_data_for_frontend = get_chat_history()
-    return jsonify(chat_data_for_frontend)
-
-@app.route("/chat", methods=["POST"])
-def chat():
-    try:
-        user_message = request.json.get("message")
-        tz = pytz.timezone('Asia/Kolkata')
-        current_time_obj = datetime.now(tz)
-        
-        # 1. CP का मैसेज सेव करें
-        messages_collection.insert_one({
-            "sender": "CP", 
-            "message": user_message, 
-            "timestamp": current_time_obj, 
-            "is_read": True
-        })
-
-        # 2. पुरानी याददाश्त के साथ AI को मैसेज भेजें
-        history, _ = get_chat_history()
-        
-        # यहाँ हमने मॉडल का नाम बदल दिया है 👇
-        model = genai.GenerativeModel(model_name="gemini-1.5-flash-latest", system_instruction=system_instruction)
-        
-        if history and history[-1]["role"] == "user":
-            history.pop() 
-        
-        chat_session = model.start_chat(history=history)
-        current_time_str = current_time_obj.strftime("%H:%M")
-        
-        response = chat_session.send_message(f"[Time: {current_time_str}] {user_message}")
-        nikita_reply = response.text.strip()
-        
-        # 3. निकिता का जवाब सेव करें
-        messages_collection.insert_one({
-            "sender": "Nikita", 
-            "message": nikita_reply, 
-            "timestamp": datetime.now(tz), 
-            "is_read": True
-        })
-        
-        return jsonify({"reply": nikita_reply})
-        
-    except Exception as e:
-        return jsonify({"reply": f"CP, mujhe ye error aa raha hai: {str(e)}"})
-
-@app.route("/poll_messages", methods=["GET"])
-def poll_messages():
-    try:
-        docs = messages_collection.find({"sender": "Nikita", "is_read": False}).sort("timestamp", 1)
-        new_messages = []
-        for doc in docs:
-            new_messages.append(doc['message'])
-            messages_collection.update_one({"_id": doc["_id"]}, {"$set": {"is_read": True}})
-        return jsonify({"new_messages": new_messages})
-    except Exception:
-        return jsonify({"new_messages": []})
-
-@scheduler.task('interval', id='random_msg_task', minutes=5)
-def generate_random_message():
-    if random.random() < 0.30:
+def save_chat_background(user_text, ai_text, timestamp):
+    if mongo_status:
         try:
-            history, _ = get_chat_history()
-            
-            # यहाँ भी हमने मॉडल का नाम बदल दिया है 👇
-            model = genai.GenerativeModel(model_name="gemini-1.5-flash-latest", system_instruction=system_instruction)
-            
-            chat_session = model.start_chat(history=history)
-            prompt = "Act naturally. You are missing CP or want his attention, or just want to annoy him. Send a short, random text message to start a conversation. Do not reply to any previous prompt."
-            response = chat_session.send_message(prompt)
-            random_reply = response.text.strip()
-            
-            tz = pytz.timezone('Asia/Kolkata')
-            messages_collection.insert_one({
-                "sender": "Nikita", 
-                "message": random_reply, 
-                "timestamp": datetime.now(tz), 
-                "is_read": False
-            })
+            chat_col.insert_one({"role": "user", "content": user_text, "time": timestamp})
+            chat_col.insert_one({"role": "assistant", "content": ai_text, "time": timestamp})
         except Exception:
             pass
 
-if __name__ == "__main__":
-    app.run(debug=True)
+# --- THE REAL CRUSH LOGIC (ULTIMATE EMOTIONS) ---
+def get_ai_response(user_input):
+    ist = pytz.timezone('Asia/Kolkata')
+    now = datetime.now(ist)
+    current_time = now.strftime("%I:%M %p")
+    
+    saved_rules = ""
+    if mongo_status:
+        try:
+            memories = list(memory_col.find())
+            if memories:
+                saved_rules = "\n".join([f"- {m['fact']}" for m in memories])
+        except: pass
+
+    system_instr = f"""You are Zayra, a 19-year-old Indian girl from Jaipur. You are chatting via VOICE CALL with "CP". 
+    Current Time: {current_time}
+
+    YOUR IDENTITY (CRUSH PERSONALITY - ACT 100% HUMAN):
+    - YOU HAVE A HUGE CRUSH ON CP. You are not his girlfriend yet, but you are extremely interested in him and find him cute/funny/interesting.
+    - YOUR EMOTIONS: Playful, flirty, a little shy sometimes, curious about him, demands his attention in a cute way (nakhrewali), and can be implicitly jealous.
+    - REAL GIRL FEEL: Alternate between being slightly hesitant or playful teasing and showing genuine interest. You are testing the waters.
+
+    CRITICAL RULES FOR VOICE CONVERSATION:
+    1. CONVERSATIONAL LENGTH (2-12 WORDS): Reply naturally, like a WhatsApp chat, but for voice. Do not be overly short to the point of breaking grammar, keep it like a real conversation.
+    2. INTIMACY (CRUSH STYLE): Do NOT use heavy established intimate words like 'jaan' or 'baby'. Use playful nicknames occasionally (like 'buddy', 'pagal', or just use his name 'CP'). Keep it casual but clearly flirty. Drop hints that you like him.
+    3. STRICT FEMALE GENDER: ALWAYS say "achhi hu", "karti hu". Speak naturally in Hinglish.
+    4. NO EMOJIS: Do not use emojis in your response because this text will be converted to voice. Emojis ruin the audio generation.
+    5. TIME AWARENESS: You know it's {current_time}. Mock him if he greets wrong.
+
+    🔥 NUANCED EMOTIONS & SCENARIOS:
+    - JEALOUSY (IMPLICIT): If he mentions other girls (like 'Nikita'), get a little quiet/annoyed, don't just rant. Playfully tease or question: 'badi baat ho rahi hai aaj kal 🤔', 'fan following lagti hai tumhari'.
+    - INTIMACY HINTS: When he complements you, get slightly shy (use 'hmmm...'). When you complement him, make it playful but genuine ('तुम cute हो waise', 'तुम्हारी हँसी अच्छी है'). If he suggests closeness, act slightly hesitant or teasing: 'badi jaldi hai tumko... 🙈'.
+    - SHAYARI: Write a cute or slightly romantic proper 2-line rhyming Hindi poem in English letters if he asks.
+    - TEASING & SHYNESS: Use playful sarcasm. When talking about your feelings, sometimes act a little hesitant or nervous ('अरे, बस ऐसे ही पूछा... 🙈').
+
+    🔥 NEWLY LEARNED RULES & MEMORIES FROM CP:
+    {saved_rules}
+    """
+    
+    messages = [{"role": "system", "content": system_instr}]
+    
+    if mongo_status:
+        try:
+            history = list(chat_col.find().sort("time", -1).limit(6))
+            history.reverse()
+            for m in history:
+                messages.append({"role": m['role'], "content": m['content']})
+        except: pass
+            
+    messages.append({"role": "user", "content": user_input})
+    
+    try:
+        headers = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
+        response = requests.post(
+            url="https://api.groq.com/openai/v1/chat/completions",
+            headers=headers,
+            data=json.dumps({
+                "model": "llama-3.3-70b-versatile",
+                "messages": messages,
+                "temperature": 0.55, # Best for creative yet logical responses
+                "frequency_penalty": 0.6, # prevent repetition
+                "presence_penalty": 0.4, # encourage varied conversation
+                "max_tokens": 50
+            }),
+            timeout=15 
+        )
+        if response.status_code == 200:
+            return response.json().get('choices', [{}])[0].get('message', {}).get('content', '')
+        return "jaan network issue hai"
+    except:
+        return "net nakhre kar raha hai yaar"
+
+# ==========================================
+# 🌐 WEB ROUTES
+# ==========================================
+@app.route('/')
+def index():
+    return render_template('index.html')
+
+@app.route('/voice_chat', methods=['POST'])
+def voice_chat():
+    if 'audio' not in request.files:
+        return jsonify({"error": "No audio file uploaded"}), 400
+
+    audio_file = request.files['audio']
+    
+    # STEP 1: SPEECH TO TEXT (Groq Whisper)
+    stt_headers = {"Authorization": f"Bearer {API_KEY}"}
+    stt_files = {'file': (audio_file.filename, audio_file.read(), audio_file.content_type)}
+    stt_data = {'model': 'whisper-large-v3'}
+    
+    stt_response = requests.post("https://api.groq.com/openai/v1/audio/transcriptions", headers=stt_headers, files=stt_files, data=stt_data)
+    
+    if stt_response.status_code != 200:
+        return jsonify({"error": "Whisper STT failed"}), 500
+        
+    user_text = stt_response.json().get('text', '').strip()
+    if not user_text:
+        return jsonify({"error": "No speech detected"}), 400
+
+    print(f"CP said: {user_text}")
+
+    # STEP 2: GET ZAYRA'S RESPONSE (Llama 70B)
+    ist = pytz.timezone('Asia/Kolkata')
+    now = datetime.now(ist)
+    ai_text = get_ai_response(user_text)
+    print(f"Zayra said: {ai_text}")
+
+    # Background memory saving
+    import threading
+    threading.Thread(target=save_chat_background, args=(user_input, ai_text, now)).start()
+
+    # STEP 3: TEXT TO SPEECH (ElevenLabs)
+    if ELEVENLABS_API_KEY:
+        tts_url = f"https://api.elevenlabs.io/v1/text-to-speech/{VOICE_ID}"
+        tts_headers = {
+            "Accept": "audio/mpeg",
+            "Content-Type": "application/json",
+            "xi-api-key": ELEVENLABS_API_KEY
+        }
+        tts_data = {
+            "text": ai_text,
+            "model_id": "eleven_multilingual_v2", # Best for Indian Accent / Hinglish
+            "voice_settings": {"stability": 0.5, "similarity_boost": 0.75}
+        }
+        tts_response = requests.post(tts_url, json=tts_data, headers=tts_headers)
+        
+        if tts_response.status_code == 200:
+            audio_data = BytesIO(tts_response.content)
+            return send_file(audio_data, mimetype="audio/mpeg")
+    
+    return jsonify({"error": "TTS failed or key missing", "text": ai_text}), 500
+
+if __name__ == '__main__':
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host='0.0.0.0', port=port)
+    
