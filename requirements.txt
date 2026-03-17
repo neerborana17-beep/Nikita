@@ -1,8 +1,6 @@
-Flask==3.0.0
-google-generativeai>=0.7.2
+flask
+requests
+pymongo[srv]
 gunicorn
-python-dotenv
-Flask-APScheduler
 pytz
-pymongo
-dnspython
+certifi
