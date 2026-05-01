@@ -3,6 +3,7 @@ from flask import Flask, request
 from pymongo import MongoClient
 import certifi
 from datetime import datetime, timedelta
+import pytz
 
 app = Flask(__name__)
 
@@ -13,164 +14,175 @@ MONGO_URI = os.getenv("MONGO_URI")
 ALLOWED_USER_ID = 6243559768
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
-# ---------------- DB ----------------
-
 client = MongoClient(MONGO_URI, tlsCAFile=certifi.where())
 db = client['zayra_ai']
 
 history_col = db['chat_history']
 memory_col = db['memory']
 
-# ---------------- SAVE ----------------
+# ---------------- TIME ----------------
 
-def save(chat_id, role, text):
-    history_col.insert_one({
-        "chat_id": chat_id,
-        "role": role,
-        "content": text,
-        "time": datetime.utcnow()
-    })
-
-def get_history(chat_id):
-    msgs = list(history_col.find({"chat_id": chat_id})
-                .sort("time", -1).limit(8))
-    msgs.reverse()
-    return msgs
+def get_time():
+    ist = pytz.timezone("Asia/Kolkata")
+    return datetime.now(ist)
 
 # ---------------- MEMORY ----------------
 
+def get_memory(chat_id):
+    return memory_col.find_one({"chat_id": chat_id}) or {}
+
 def update_memory(chat_id, user_text):
-    mem = memory_col.find_one({"chat_id": chat_id}) or {}
 
-    attach = mem.get("attachment", 10)
+    mem = get_memory(chat_id)
 
-    if len(user_text) < 4:
-        attach -= 1
-    elif any(x in user_text.lower() for x in ["love","miss","cute"]):
+    attach = mem.get("attachment", 20)
+    mood = mem.get("mood", "normal")
+    trust = mem.get("trust", 10)
+    hurt = mem.get("hurt", 0)
+
+    text = user_text.lower()
+
+    # ❤️ emotional bonding
+    if "miss" in text or "love" in text:
         attach += 2
-    else:
-        attach += 0.3
+        trust += 1
+
+    elif "sorry" in text:
+        hurt = max(0, hurt - 2)
+        trust += 1
+
+    elif len(text) < 4:
+        attach -= 0.3
+
+    # 💔 hurt system
+    if "ignore" in text:
+        hurt += 1
 
     attach = max(0, min(100, attach))
 
     memory_col.update_one(
         {"chat_id": chat_id},
-        {"$set": {"attachment": attach}},
+        {"$set": {
+            "attachment": attach,
+            "mood": mood,
+            "trust": trust,
+            "hurt": hurt
+        }},
         upsert=True
     )
 
-    return attach
+    return attach, mood, trust, hurt
 
-def get_memory(chat_id):
-    return memory_col.find_one({"chat_id": chat_id}) or {}
+# ---------------- MEMORY RECALL ----------------
 
-# ---------------- TIME ----------------
+def recall(history):
 
-def get_time_mood():
-    h = datetime.now().hour
-    if h < 12:
-        return "morning"
-    elif h < 18:
-        return "day"
-    else:
-        return "night"
+    if len(history) < 3:
+        return ""
 
-# ---------------- EMOJI ----------------
+    last_user = [m["content"] for m in history if m["role"] == "user"]
 
-def handle_emoji(text, attach):
+    if len(last_user) >= 2:
+        return f"User earlier said: {last_user[-2]}"
 
-    if "❤️" in text:
+    return ""
+
+# ---------------- IMAGE DETECTION (HACK) ----------------
+
+def detect_image_type(message):
+
+    caption = message.get("caption", "").lower()
+
+    if any(x in caption for x in ["girl","she","her"]):
+        return "girl"
+
+    if any(x in caption for x in ["me","self","my"]):
+        return "self"
+
+    return "unknown"
+
+def image_reply(chat_id, message):
+
+    mem = get_memory(chat_id)
+    attach = mem.get("attachment", 20)
+
+    img_type = detect_image_type(message)
+
+    if img_type == "girl":
+        if attach > 60:
+            return random.choice([
+                "ye kaun h 😒",
+                "tumhari friend h kya",
+                "hmm… acha"
+            ])
+        else:
+            return "nice pic"
+
+    if img_type == "self":
         return random.choice([
-            "acha 😏",
-            "mere liye tha kya",
-            "hmm samajh gyi"
+            "acha lag rahe ho",
+            "selfie mood 😏",
+            "hero lag rahe"
         ])
 
-    if "😂" in text:
-        return random.choice([
-            "pagal ho kya 😂",
-            "itna funny kya h",
-            "hassi aa rhi h tumhe"
-        ])
+    return random.choice([
+        "kaha ki h ye",
+        "nice pic",
+        "kab ki h"
+    ])
 
-    if "😢" in text or "😭" in text:
-        return random.choice([
-            "kya hua",
-            "btao na",
-            "seriously kya hua?"
-        ])
+# ---------------- BRAIN ----------------
 
-    if "😒" in text:
+def brain(user_text, attach, trust, hurt):
+
+    t = user_text.lower()
+
+    # short
+    if t in ["hmm","ok","hn","acha"]:
+        return random.choice(["hmm", "acha", "hn"])
+
+    # 💔 hurt reaction
+    if hurt > 2:
         return random.choice([
-            "attitude kyu",
-            "ab kya hua",
+            "tum change lag rahe ho",
+            "pehle aise nahi the",
             "theek ho?"
         ])
 
-    return None
+    # ❤️ deep bonding
+    if attach > 75:
+        return random.choice([
+            "tumse baat karke acha lagta h",
+            "tum important ho thode",
+            "miss karti hu kabhi kabhi"
+        ])
 
-# ---------------- FLIRT ----------------
-
-def flirt_reply(attach):
-
-    if attach < 40:
-        return random.choice(["acha 😅", "hmm", "theek h"])
-
-    elif attach < 80:
+    # 😏 mid
+    if attach > 40:
         return random.choice([
             "tum bhi na 😏",
             "acha ji",
             "zyada mat bolo"
         ])
 
-    else:
-        return random.choice([
-            "sirf bol rahe ho ya sach me 😏",
-            "tum thode special ho",
-            "acha lagta h tumse baat karna"
-        ])
-
-# ---------------- IMAGE (FREE) ----------------
-
-def image_reply(chat_id):
-
-    mem = get_memory(chat_id)
-    count = mem.get("img_count", 0) + 1
-
-    memory_col.update_one(
-        {"chat_id": chat_id},
-        {"$set": {"img_count": count}},
-        upsert=True
-    )
-
-    replies = [
-        "acha lag rahe ho 😏",
-        "pose to hero wala h",
-        "ye pic kab ki h?",
-        "selfie mood me ho aaj",
-        "kaha click ki ye"
-    ]
-
-    if count > 2:
-        replies.append("tum pics bhejna pasand karte ho na 😏")
-
-    return random.choice(replies)
+    return None
 
 # ---------------- AI ----------------
 
-def ai_reply(user_text, history, attach):
+def ai_reply(user_text, history, attach, mood):
 
     context = ""
     for m in history:
         role = "User" if m["role"] == "user" else "Zayra"
         context += f"{role}: {m['content']}\n"
 
-    time_mood = get_time_mood()
-
     prompt = f"""
-You are Zayra (Jaipur, LLB student).
+You are Zayra.
 
-Time: {time_mood}
+- Jaipur girl
+- LLB student
+- soft + teasing + caring
+
 Attachment: {attach}
 
 CHAT:
@@ -180,21 +192,12 @@ User: {user_text}
 
 RULES:
 
-- Hinglish
 - short replies
-- natural texting
-- no robotic tone
-- continue context
+- natural hinglish
+- no repetition
+- continue topic
+- real girl tone
 
-BEHAVIOR:
-- morning → sleepy
-- night → emotional
-- high attachment → soft + possessive
-
-Examples:
-"hmm"
-"acha"
-"tum bhi na"
 """
 
     res = requests.post(
@@ -206,7 +209,7 @@ Examples:
         json={
             "model": "llama-3.3-70b-versatile",
             "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0.95,
+            "temperature": 0.9,
             "max_tokens": 60
         }
     )
@@ -222,6 +225,37 @@ def send(chat_id, text):
     requests.post(f"{TELEGRAM_API}/sendMessage", json={
         "chat_id": chat_id,
         "text": text
+    })
+
+# ---------------- AUTO MESSAGE ----------------
+
+def auto_message():
+
+    chat_id = ALLOWED_USER_ID
+
+    last = history_col.find_one({"chat_id": chat_id}, sort=[("time",-1)])
+
+    if last:
+        gap = datetime.utcnow() - last["time"]
+        if gap < timedelta(minutes=20):
+            return
+
+    msgs = [
+        "kya kar rahe ho",
+        "aaj yaad nahi kiya",
+        "busy ho kya",
+        "acha suno"
+    ]
+
+    msg = random.choice(msgs)
+
+    send(chat_id, msg)
+
+    history_col.insert_one({
+        "chat_id": chat_id,
+        "role": "assistant",
+        "content": msg,
+        "time": datetime.utcnow()
     })
 
 # ---------------- MAIN ----------------
@@ -240,11 +274,10 @@ def webhook():
     if chat_id != ALLOWED_USER_ID:
         return {"ok": True}
 
-    # 📸 IMAGE
+    # IMAGE
     if "photo" in message:
-        reply = image_reply(chat_id)
+        reply = image_reply(chat_id, message)
         send(chat_id, reply)
-        save(chat_id, "assistant", reply)
         return {"ok": True}
 
     user_text = message.get("text")
@@ -252,51 +285,50 @@ def webhook():
     if not user_text:
         return {"ok": True}
 
-    attach = update_memory(chat_id, user_text)
+    history = list(history_col.find({"chat_id": chat_id})
+                   .sort("time",-1).limit(10))
+    history.reverse()
 
-    # 😶 emoji
-    emoji_res = handle_emoji(user_text, attach)
-    if emoji_res:
-        send(chat_id, emoji_res)
-        save(chat_id, "assistant", emoji_res)
-        return {"ok": True}
+    attach, mood, trust, hurt = update_memory(chat_id, user_text)
 
-    # 😏 flirt
-    if any(x in user_text.lower() for x in ["love","cute","miss"]):
-        reply = flirt_reply(attach)
-        send(chat_id, reply)
-        save(chat_id, "assistant", reply)
-        return {"ok": True}
+    # 🧠 brain
+    decision = brain(user_text, attach, trust, hurt)
 
-    history = get_history(chat_id)
+    if decision:
+        reply = decision
+    else:
+        reply = ai_reply(user_text, history, attach, mood)
 
-    time.sleep(random.uniform(0.8,2))
+    time.sleep(random.uniform(1,2))
 
     requests.post(f"{TELEGRAM_API}/sendChatAction", json={
         "chat_id": chat_id,
         "action": "typing"
     })
 
-    reply = ai_reply(user_text, history, attach)
-
-    # short control
-    if user_text.lower() in ["hmm","ok","hn","acha"]:
-        reply = random.choice(["hmm", "acha", "hn"])
-
-    # human randomness
-    if random.random() < 0.2:
-        reply = reply.lower()
-
-    if random.random() < 0.15:
-        reply = reply[:len(reply)//2]
-
     send(chat_id, reply)
 
-    save(chat_id, "user", user_text)
-    save(chat_id, "assistant", reply)
+    history_col.insert_one({
+        "chat_id": chat_id,
+        "role": "user",
+        "content": user_text,
+        "time": datetime.utcnow()
+    })
+
+    history_col.insert_one({
+        "chat_id": chat_id,
+        "role": "assistant",
+        "content": reply,
+        "time": datetime.utcnow()
+    })
 
     return {"ok": True}
 
+@app.route("/self")
+def trigger_self():
+    auto_message()
+    return "ok"
+
 @app.route("/")
 def home():
-    return "Zayra Final AI Running"
+    return "Zayra Ultimate Brain AI Running"
