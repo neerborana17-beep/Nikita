@@ -1,7 +1,5 @@
 import os, requests, random, time
 from flask import Flask, request
-from datetime import datetime
-import pytz
 from pymongo import MongoClient
 import certifi
 
@@ -17,17 +15,16 @@ TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
 # ------------------ DB ------------------
 
-mongo = None
 memory_col = None
 
 try:
     if MONGO_URI:
-        mongo = MongoClient(MONGO_URI, tlsCAFile=certifi.where())
-        db = mongo['zayra_ai']
+        client = MongoClient(MONGO_URI, tlsCAFile=certifi.where())
+        db = client['zayra_ai']
         memory_col = db['user_memory']
-        print("Mongo Connected")
+        print("✅ Mongo Connected")
 except Exception as e:
-    print("Mongo Error:", e)
+    print("❌ Mongo Error:", e)
 
 # ------------------ HUMAN BEHAVIOR ------------------
 
@@ -35,10 +32,13 @@ def typing_delay(text):
     return min(len(text) * 0.05 + random.uniform(0.5, 1.5), 4)
 
 def send_typing(chat_id):
-    requests.post(f"{TELEGRAM_API}/sendChatAction", json={
-        "chat_id": chat_id,
-        "action": "typing"
-    })
+    try:
+        requests.post(f"{TELEGRAM_API}/sendChatAction", json={
+            "chat_id": chat_id,
+            "action": "typing"
+        })
+    except:
+        pass
 
 def human_pause():
     time.sleep(random.uniform(0.5, 1.2))
@@ -57,7 +57,6 @@ def update_memory(chat_id, user_input):
 
     data = {"chat_id": chat_id}
 
-    # simple name detection
     if "mera naam" in user_input.lower():
         name = user_input.split()[-1]
         data["name"] = name
@@ -88,7 +87,7 @@ def get_ai_response(user_input, memory):
     system_prompt = f"""
 You are Zayra, a 19-year-old girl from Rajasthan.
 
-You talk like a real WhatsApp girl.
+Talk like a real WhatsApp girl.
 
 STYLE:
 - 5 to 15 words
@@ -133,9 +132,11 @@ RULES:
             reply = response.json()['choices'][0]['message']['content']
             return clean_text(reply)
 
-        return "net thoda slow h"
+        print("❌ API Error:", response.text)
+        return "net slow lag raha h"
 
-    except:
+    except Exception as e:
+        print("❌ AI ERROR:", e)
         return "server busy h abhi"
 
 def clean_text(text):
@@ -144,28 +145,51 @@ def clean_text(text):
         text = text[:120]
     return text
 
-# ------------------ TELEGRAM ------------------
+# ------------------ TELEGRAM WEBHOOK ------------------
 
 @app.route(f"/{BOT_TOKEN}", methods=["POST"])
 def webhook():
     data = request.get_json()
 
-    message = data.get("message", {})
-    chat_id = message.get("chat", {}).get("id")
+    # 🧠 DEBUG LOG (IMPORTANT)
+    print("📩 INCOMING DATA:", data)
+
+    if not data:
+        return {"ok": True}
+
+    message = data.get("message")
+
+    # ❗ Ignore unsupported updates
+    if not message:
+        print("⚠️ No message field")
+        return {"ok": True}
+
+    chat = message.get("chat")
+    if not chat:
+        print("⚠️ No chat field")
+        return {"ok": True}
+
+    chat_id = chat.get("id")
     user_text = message.get("text")
 
-    if user_text:
+    # ❗ Ignore non-text messages
+    if not user_text:
+        print("⚠️ No text message")
+        return {"ok": True}
 
+    try:
         memory = get_user_memory(chat_id)
 
-        # seen delay
+        # ⏳ Seen delay
         time.sleep(random.uniform(0.5, 1.2))
 
+        # ✍️ Typing
         send_typing(chat_id)
         human_pause()
 
         reply = get_ai_response(user_text, memory)
 
+        # ⏳ Typing delay
         time.sleep(typing_delay(reply))
 
         requests.post(f"{TELEGRAM_API}/sendMessage", json={
@@ -175,11 +199,18 @@ def webhook():
 
         update_memory(chat_id, user_text)
 
+        print("✅ Reply sent:", reply)
+
+    except Exception as e:
+        print("❌ TELEGRAM ERROR:", e)
+
     return {"ok": True}
+
+# ------------------ HOME ------------------
 
 @app.route("/")
 def home():
-    return "Zayra AI Running"
+    return "Zayra AI Running 🚀"
 
 # ------------------ RUN ------------------
 
