@@ -2,7 +2,7 @@ import os, requests, random, time
 from flask import Flask, request
 from pymongo import MongoClient
 import certifi
-from datetime import datetime
+from datetime import datetime, timedelta
 
 app = Flask(__name__)
 
@@ -12,6 +12,8 @@ MONGO_URI = os.getenv("MONGO_URI")
 
 ALLOWED_USER_ID = 6243559768
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
+
+# ---------------- DB ----------------
 
 client = MongoClient(MONGO_URI, tlsCAFile=certifi.where())
 db = client['zayra_ai']
@@ -44,7 +46,7 @@ def update_memory(chat_id, user_text):
 
     if len(user_text) < 4:
         attach -= 1
-    elif "love" in user_text.lower():
+    elif any(x in user_text.lower() for x in ["love","miss","cute"]):
         attach += 2
     else:
         attach += 0.3
@@ -59,6 +61,9 @@ def update_memory(chat_id, user_text):
 
     return attach
 
+def get_memory(chat_id):
+    return memory_col.find_one({"chat_id": chat_id}) or {}
+
 # ---------------- TIME ----------------
 
 def get_time_mood():
@@ -70,21 +75,86 @@ def get_time_mood():
     else:
         return "night"
 
-# ---------------- BRAIN ----------------
+# ---------------- EMOJI ----------------
 
-def decide_mode(user_text, attach):
-    t = user_text.lower()
+def handle_emoji(text, attach):
 
-    if t in ["hmm","ok","hn","acha"]:
-        return "short"
+    if "❤️" in text:
+        return random.choice([
+            "acha 😏",
+            "mere liye tha kya",
+            "hmm samajh gyi"
+        ])
 
-    if "love" in t or "miss" in t:
-        return "emotional"
+    if "😂" in text:
+        return random.choice([
+            "pagal ho kya 😂",
+            "itna funny kya h",
+            "hassi aa rhi h tumhe"
+        ])
 
-    if attach > 80:
-        return random.choice(["romantic","tease","soft"])
+    if "😢" in text or "😭" in text:
+        return random.choice([
+            "kya hua",
+            "btao na",
+            "seriously kya hua?"
+        ])
 
-    return random.choice(["short","normal","tease","ignore"])
+    if "😒" in text:
+        return random.choice([
+            "attitude kyu",
+            "ab kya hua",
+            "theek ho?"
+        ])
+
+    return None
+
+# ---------------- FLIRT ----------------
+
+def flirt_reply(attach):
+
+    if attach < 40:
+        return random.choice(["acha 😅", "hmm", "theek h"])
+
+    elif attach < 80:
+        return random.choice([
+            "tum bhi na 😏",
+            "acha ji",
+            "zyada mat bolo"
+        ])
+
+    else:
+        return random.choice([
+            "sirf bol rahe ho ya sach me 😏",
+            "tum thode special ho",
+            "acha lagta h tumse baat karna"
+        ])
+
+# ---------------- IMAGE (FREE) ----------------
+
+def image_reply(chat_id):
+
+    mem = get_memory(chat_id)
+    count = mem.get("img_count", 0) + 1
+
+    memory_col.update_one(
+        {"chat_id": chat_id},
+        {"$set": {"img_count": count}},
+        upsert=True
+    )
+
+    replies = [
+        "acha lag rahe ho 😏",
+        "pose to hero wala h",
+        "ye pic kab ki h?",
+        "selfie mood me ho aaj",
+        "kaha click ki ye"
+    ]
+
+    if count > 2:
+        replies.append("tum pics bhejna pasand karte ho na 😏")
+
+    return random.choice(replies)
 
 # ---------------- AI ----------------
 
@@ -96,10 +166,9 @@ def ai_reply(user_text, history, attach):
         context += f"{role}: {m['content']}\n"
 
     time_mood = get_time_mood()
-    mode = decide_mode(user_text, attach)
 
     prompt = f"""
-You are Zayra (Jaipur, LLB girl).
+You are Zayra (Jaipur, LLB student).
 
 Time: {time_mood}
 Attachment: {attach}
@@ -112,28 +181,20 @@ User: {user_text}
 RULES:
 
 - Hinglish
-- short replies preferred
-- real girl texting style
-- imperfect sentences allowed
-- sometimes incomplete reply
+- short replies
+- natural texting
 - no robotic tone
+- continue context
 
 BEHAVIOR:
-
 - morning → sleepy
 - night → emotional
-- high attachment → soft / possessive
+- high attachment → soft + possessive
 
-- sometimes:
-  - ignore
-  - tease
-  - double message
-
-EXAMPLES:
+Examples:
 "hmm"
-"acha suno"
-"tum na…"
-"chodo"
+"acha"
+"tum bhi na"
 """
 
     res = requests.post(
@@ -179,21 +240,38 @@ def webhook():
     if chat_id != ALLOWED_USER_ID:
         return {"ok": True}
 
+    # 📸 IMAGE
+    if "photo" in message:
+        reply = image_reply(chat_id)
+        send(chat_id, reply)
+        save(chat_id, "assistant", reply)
+        return {"ok": True}
+
     user_text = message.get("text")
 
     if not user_text:
         return {"ok": True}
 
-    # 🧠 update memory
     attach = update_memory(chat_id, user_text)
 
-    # 🧠 history
+    # 😶 emoji
+    emoji_res = handle_emoji(user_text, attach)
+    if emoji_res:
+        send(chat_id, emoji_res)
+        save(chat_id, "assistant", emoji_res)
+        return {"ok": True}
+
+    # 😏 flirt
+    if any(x in user_text.lower() for x in ["love","cute","miss"]):
+        reply = flirt_reply(attach)
+        send(chat_id, reply)
+        save(chat_id, "assistant", reply)
+        return {"ok": True}
+
     history = get_history(chat_id)
 
-    # 🤖 thinking delay
-    time.sleep(random.uniform(0.8, 2))
+    time.sleep(random.uniform(0.8,2))
 
-    # typing
     requests.post(f"{TELEGRAM_API}/sendChatAction", json={
         "chat_id": chat_id,
         "action": "typing"
@@ -201,20 +279,18 @@ def webhook():
 
     reply = ai_reply(user_text, history, attach)
 
-    # 🎭 human behavior
+    # short control
+    if user_text.lower() in ["hmm","ok","hn","acha"]:
+        reply = random.choice(["hmm", "acha", "hn"])
+
+    # human randomness
     if random.random() < 0.2:
         reply = reply.lower()
 
     if random.random() < 0.15:
         reply = reply[:len(reply)//2]
 
-    # double msg
-    if random.random() < 0.2:
-        send(chat_id, reply[:len(reply)//2])
-        time.sleep(1)
-        send(chat_id, reply[len(reply)//2:])
-    else:
-        send(chat_id, reply)
+    send(chat_id, reply)
 
     save(chat_id, "user", user_text)
     save(chat_id, "assistant", reply)
@@ -223,4 +299,4 @@ def webhook():
 
 @app.route("/")
 def home():
-    return "Zayra Ultra Real AI Running"
+    return "Zayra Final AI Running"
