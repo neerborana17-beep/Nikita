@@ -23,8 +23,11 @@ try:
         db = client['zayra_ai']
         memory_col = db['user_memory']
         print("✅ Mongo Connected")
+    else:
+        print("⚠️ No Mongo URI found")
 except Exception as e:
     print("❌ Mongo Error:", e)
+    memory_col = None
 
 # ------------------ HUMAN BEHAVIOR ------------------
 
@@ -37,8 +40,8 @@ def send_typing(chat_id):
             "chat_id": chat_id,
             "action": "typing"
         })
-    except:
-        pass
+    except Exception as e:
+        print("Typing error:", e)
 
 def human_pause():
     time.sleep(random.uniform(0.5, 1.2))
@@ -46,26 +49,32 @@ def human_pause():
 # ------------------ MEMORY ------------------
 
 def get_user_memory(chat_id):
-    if memory_col:
-        user = memory_col.find_one({"chat_id": chat_id})
-        return user if user else {}
+    try:
+        if memory_col is not None:
+            user = memory_col.find_one({"chat_id": chat_id})
+            return user if user else {}
+    except Exception as e:
+        print("Memory fetch error:", e)
     return {}
 
 def update_memory(chat_id, user_input):
-    if not memory_col:
-        return
+    try:
+        if memory_col is None:
+            return
 
-    data = {"chat_id": chat_id}
+        data = {"chat_id": chat_id}
 
-    if "mera naam" in user_input.lower():
-        name = user_input.split()[-1]
-        data["name"] = name
+        if "mera naam" in user_input.lower():
+            name = user_input.split()[-1]
+            data["name"] = name
 
-    memory_col.update_one(
-        {"chat_id": chat_id},
-        {"$set": data},
-        upsert=True
-    )
+        memory_col.update_one(
+            {"chat_id": chat_id},
+            {"$set": data},
+            upsert=True
+        )
+    except Exception as e:
+        print("Memory update error:", e)
 
 # ------------------ AI ------------------
 
@@ -106,7 +115,6 @@ Mood: {mood}
 RULES:
 - Hindi only
 - no robotic replies
-- natural tone
 """
 
     try:
@@ -132,7 +140,7 @@ RULES:
             reply = response.json()['choices'][0]['message']['content']
             return clean_text(reply)
 
-        print("❌ API Error:", response.text)
+        print("❌ API ERROR:", response.text)
         return "net slow lag raha h"
 
     except Exception as e:
@@ -149,35 +157,29 @@ def clean_text(text):
 
 @app.route(f"/{BOT_TOKEN}", methods=["POST"])
 def webhook():
-    data = request.get_json()
-
-    # 🧠 DEBUG LOG (IMPORTANT)
-    print("📩 INCOMING DATA:", data)
-
-    if not data:
-        return {"ok": True}
-
-    message = data.get("message")
-
-    # ❗ Ignore unsupported updates
-    if not message:
-        print("⚠️ No message field")
-        return {"ok": True}
-
-    chat = message.get("chat")
-    if not chat:
-        print("⚠️ No chat field")
-        return {"ok": True}
-
-    chat_id = chat.get("id")
-    user_text = message.get("text")
-
-    # ❗ Ignore non-text messages
-    if not user_text:
-        print("⚠️ No text message")
-        return {"ok": True}
-
     try:
+        data = request.get_json()
+
+        print("📩 INCOMING:", data)
+
+        if not data:
+            return {"ok": True}
+
+        message = data.get("message")
+        if not message:
+            return {"ok": True}
+
+        chat = message.get("chat")
+        if not chat:
+            return {"ok": True}
+
+        chat_id = chat.get("id")
+        user_text = message.get("text")
+
+        if not user_text:
+            return {"ok": True}
+
+        # 🧠 Memory
         memory = get_user_memory(chat_id)
 
         # ⏳ Seen delay
@@ -187,19 +189,22 @@ def webhook():
         send_typing(chat_id)
         human_pause()
 
+        # 🤖 AI reply
         reply = get_ai_response(user_text, memory)
 
         # ⏳ Typing delay
         time.sleep(typing_delay(reply))
 
+        # 📩 Send message
         requests.post(f"{TELEGRAM_API}/sendMessage", json={
             "chat_id": chat_id,
             "text": reply
         })
 
+        # 💾 Save memory
         update_memory(chat_id, user_text)
 
-        print("✅ Reply sent:", reply)
+        print("✅ Reply:", reply)
 
     except Exception as e:
         print("❌ TELEGRAM ERROR:", e)
