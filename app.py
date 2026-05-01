@@ -19,8 +19,9 @@ client = MongoClient(MONGO_URI, tlsCAFile=certifi.where())
 db = client['zayra_ai']
 
 history_col = db['chat_history']
+memory_col = db['memory']
 
-# ---------------- HISTORY ----------------
+# ---------------- SAVE ----------------
 
 def save_chat(chat_id, role, text):
     history_col.insert_one({
@@ -32,58 +33,122 @@ def save_chat(chat_id, role, text):
 
 def get_history(chat_id):
     msgs = list(history_col.find({"chat_id": chat_id})
-                .sort("time", -1).limit(6))
+                .sort("time", -1).limit(8))
     msgs.reverse()
     return msgs
 
-# ---------------- HELPERS ----------------
+# ---------------- RELATIONSHIP ENGINE ----------------
 
-def is_dry(text):
-    return text.lower().strip() in ["hmm", "hn", "ok", "acha", "kuch nahi"]
+def update_relationship(chat_id, user_text):
 
-def remove_repetition(text):
-    bad_patterns = ["kya hua", "kya hua?", "phir kya hua"]
-    for b in bad_patterns:
-        text = text.replace(b, "")
-    return text.strip()
+    mem = memory_col.find_one({"chat_id": chat_id}) or {}
+
+    love = mem.get("love", 5)
+    anger = mem.get("anger", 0)
+    jealousy = mem.get("jealousy", 0)
+
+    text = user_text.lower()
+
+    # ❤️ patch-up
+    if "sorry" in text or "love" in text:
+        anger = max(0, anger - 2)
+        love += 1
+
+    # 💔 fight triggers
+    elif len(text) < 4:
+        anger += 1
+        jealousy += 0.5
+
+    elif "bye" in text:
+        anger += 1
+
+    else:
+        love += 0.2
+        anger = max(0, anger - 0.2)
+
+    love = min(love, 10)
+    jealousy = min(jealousy, 10)
+
+    memory_col.update_one(
+        {"chat_id": chat_id},
+        {"$set": {
+            "love": love,
+            "anger": anger,
+            "jealousy": jealousy
+        }},
+        upsert=True
+    )
+
+    return love, anger, jealousy
+
+# ---------------- JEALOUSY CHECK ----------------
+
+def check_jealousy(chat_id):
+
+    last = history_col.find_one({"chat_id": chat_id}, sort=[("time",-1)])
+
+    if not last:
+        return 0
+
+    gap = datetime.utcnow() - last["time"]
+
+    if gap > timedelta(minutes=30):
+        return 2
+    elif gap > timedelta(minutes=15):
+        return 1
+
+    return 0
 
 # ---------------- AI ----------------
 
-def get_ai_reply(user_input, history):
-
-    last_msg = history[-1]["content"] if history else ""
+def get_ai_reply(user_input, history, memory, love, anger, jealousy):
 
     context = ""
     for m in history:
         role = "User" if m["role"] == "user" else "Zayra"
         context += f"{role}: {m['content']}\n"
 
+    mood = "normal"
+
+    if anger > 3:
+        mood = "angry"
+    elif jealousy > 2:
+        mood = "jealous"
+    elif love > 7:
+        mood = "romantic"
+
     prompt = f"""
-You are Zayra, real Indian girl chatting.
+You are Zayra (Jaipur, LLB student).
+
+Mood: {mood}
+Love: {love}
+Anger: {anger}
+Jealousy: {jealousy}
 
 CHAT:
 {context}
 
-LAST USER MSG: {user_input}
+USER:
+{user_input}
 
-IMPORTANT MICRO RULES:
+RULES:
 
-1. Reply ONLY to last message (don't change topic)
-2. Continue flow (no random new topic)
-3. Avoid repeating "kya hua"
-4. If user dry (hmm/ok) → don't force questions
-5. Sometimes short reply is ok
-6. Not every reply is question
-
-STYLE:
 - Hinglish
-- 5-12 words
-- natural human texting
-- emotional continuity
+- short (5-12 words)
+- continue same topic
+- no robotic reply
 
-GENDER:
-User male → "rha hu"
-You female → "rhi hu"
+BEHAVIOR:
+
+- angry → attitude, short
+- jealous → taunt
+- romantic → soft
+- normal → casual
+
+Examples:
+- "ab yaad aayi meri?"
+- "kisi aur se busy the kya"
+- "hmm theek hai"
 """
 
     res = requests.post(
@@ -95,16 +160,15 @@ You female → "rhi hu"
         json={
             "model": "llama-3.3-70b-versatile",
             "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0.85,
+            "temperature": 0.9,
             "max_tokens": 60
         }
     )
 
     if res.status_code == 200:
-        reply = res.json()['choices'][0]['message']['content']
-        return remove_repetition(reply)
+        return res.json()['choices'][0]['message']['content']
 
-    return "hmm thik hai"
+    return "hmm"
 
 # ---------------- SELF MESSAGE ----------------
 
@@ -112,28 +176,19 @@ def self_message():
 
     chat_id = ALLOWED_USER_ID
 
-    last = history_col.find_one({"chat_id": chat_id}, sort=[("time",-1)])
+    jealousy = check_jealousy(chat_id)
 
-    if last:
-        gap = datetime.utcnow() - last["time"]
-
-        # no spam
-        if gap < timedelta(minutes=20):
-            return
-
-    # random chance
-    if random.random() > 0.4:
+    if random.random() > 0.5:
         return
 
-    msgs = [
-        "kya kar rahe ho",
-        "ab yaad aayi meri",
-        "busy ho kya",
-        "kuch bolte bhi nahi ho",
-        "acha suno"
-    ]
-
-    msg = random.choice(msgs)
+    if jealousy > 1:
+        msg = "ab kisi aur se baat ho rhi thi kya"
+    else:
+        msg = random.choice([
+            "kya kar rahe ho",
+            "yaad hi nahi kiya",
+            "busy ho kya"
+        ])
 
     requests.post(f"{TELEGRAM_API}/sendMessage", json={
         "chat_id": chat_id,
@@ -142,14 +197,12 @@ def self_message():
 
     save_chat(chat_id, "assistant", msg)
 
-# ---------------- HUMAN REPLY ----------------
+# ---------------- REPLY ----------------
 
 def send_reply(chat_id, user_text):
 
-    # 👀 seen delay
-    time.sleep(random.uniform(0.6, 1.5))
+    time.sleep(random.uniform(0.5,1.5))
 
-    # ⌨️ typing
     requests.post(f"{TELEGRAM_API}/sendChatAction", json={
         "chat_id": chat_id,
         "action": "typing"
@@ -157,60 +210,19 @@ def send_reply(chat_id, user_text):
 
     history = get_history(chat_id)
 
-    reply = get_ai_reply(user_text, history)
+    love, anger, jealousy = update_relationship(chat_id, user_text)
+    jealousy += check_jealousy(chat_id)
 
-    # 🧠 smart short reply
-    if is_dry(user_text) and random.random() < 0.6:
-        reply = random.choice([
-            "hmm thik hai",
-            "acha",
-            "hn theek",
-            "ok"
-        ])
+    memory = memory_col.find_one({"chat_id": chat_id}) or {}
 
-    # ⏳ typing delay
+    reply = get_ai_reply(user_text, history, memory, love, anger, jealousy)
+
     time.sleep(min(max(len(reply)*0.05,1),3))
 
-    mode = random.random()
-
-    # NORMAL (70%)
-    if mode < 0.7:
-        requests.post(f"{TELEGRAM_API}/sendMessage", json={
-            "chat_id": chat_id,
-            "text": reply
-        })
-
-    # DOUBLE (20%)
-    elif mode < 0.9:
-        mid = len(reply)//2
-
-        requests.post(f"{TELEGRAM_API}/sendMessage", json={
-            "chat_id": chat_id,
-            "text": reply[:mid]
-        })
-
-        time.sleep(1)
-
-        requests.post(f"{TELEGRAM_API}/sendMessage", json={
-            "chat_id": chat_id,
-            "text": reply[mid:]
-        })
-
-    # EDIT SIM (10%)
-    else:
-        short = reply[:len(reply)//2]
-
-        requests.post(f"{TELEGRAM_API}/sendMessage", json={
-            "chat_id": chat_id,
-            "text": short
-        })
-
-        time.sleep(1.5)
-
-        requests.post(f"{TELEGRAM_API}/sendMessage", json={
-            "chat_id": chat_id,
-            "text": reply
-        })
+    requests.post(f"{TELEGRAM_API}/sendMessage", json={
+        "chat_id": chat_id,
+        "text": reply
+    })
 
     save_chat(chat_id, "user", user_text)
     save_chat(chat_id, "assistant", reply)
@@ -240,7 +252,6 @@ def webhook():
 
     return {"ok": True}
 
-# cron trigger
 @app.route("/self")
 def trigger_self():
     self_message()
@@ -248,4 +259,4 @@ def trigger_self():
 
 @app.route("/")
 def home():
-    return "Zayra Micro-Tuned AI Running"
+    return "Zayra Advanced AI Running"
