@@ -7,9 +7,14 @@ import pytz
 
 app = Flask(__name__)
 
+# ------------------ ENV ------------------
+
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 MONGO_URI = os.getenv("MONGO_URI")
+
+# 🔐 ONLY YOU CAN USE
+ALLOWED_USER_ID = 6243559768   # ⚠️ yaha apna Telegram ID daalo
 
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
@@ -18,18 +23,21 @@ TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 memory_col = None
 history_col = None
 
-if MONGO_URI:
-    client = MongoClient(MONGO_URI, tlsCAFile=certifi.where())
-    db = client['zayra_ai']
-    memory_col = db['user_memory']
-    history_col = db['chat_history']
+try:
+    if MONGO_URI:
+        client = MongoClient(MONGO_URI, tlsCAFile=certifi.where())
+        db = client['zayra_ai']
+        memory_col = db['user_memory']
+        history_col = db['chat_history']
+        print("✅ Mongo Connected")
+except Exception as e:
+    print("Mongo Error:", e)
 
 # ------------------ TIME ------------------
 
-def get_time_context():
+def get_time():
     ist = pytz.timezone('Asia/Kolkata')
     now = datetime.now(ist)
-
     return now.strftime("%I:%M %p"), now.strftime("%A")
 
 # ------------------ MEMORY ------------------
@@ -45,13 +53,12 @@ def extract_name(text):
     return None
 
 def get_memory(chat_id):
-    if memory_col:
-        user = memory_col.find_one({"chat_id": chat_id})
-        return user if user else {}
+    if memory_col is not None:
+        return memory_col.find_one({"chat_id": chat_id}) or {}
     return {}
 
 def update_memory(chat_id, user_input):
-    if not memory_col:
+    if memory_col is None:
         return
 
     data = {"chat_id": chat_id}
@@ -60,10 +67,10 @@ def update_memory(chat_id, user_input):
     if name:
         data["name"] = name.capitalize()
 
-    # relationship level increase
     user = memory_col.find_one({"chat_id": chat_id}) or {}
     level = user.get("level", 1)
     level = min(level + 0.1, 10)
+
     data["level"] = level
 
     memory_col.update_one(
@@ -72,10 +79,10 @@ def update_memory(chat_id, user_input):
         upsert=True
     )
 
-# ------------------ CHAT HISTORY ------------------
+# ------------------ HISTORY ------------------
 
 def save_chat(chat_id, role, content):
-    if history_col:
+    if history_col is not None:
         history_col.insert_one({
             "chat_id": chat_id,
             "role": role,
@@ -84,26 +91,24 @@ def save_chat(chat_id, role, content):
         })
 
 def get_history(chat_id):
-    if history_col:
+    if history_col is not None:
         msgs = list(history_col.find({"chat_id": chat_id})
                     .sort("time", -1).limit(10))
         msgs.reverse()
         return msgs
     return []
 
-# ------------------ MOOD ------------------
+# ------------------ AI ------------------
 
 def detect_mood(text):
     t = text.lower()
     if "sad" in t:
         return "emotional"
-    if "love" in t or "miss" in t:
+    if "miss" in t or "love" in t:
         return "romantic"
     if "gussa" in t:
         return "angry"
     return "normal"
-
-# ------------------ AI ------------------
 
 def get_ai_response(user_input, memory, history):
 
@@ -111,9 +116,8 @@ def get_ai_response(user_input, memory, history):
     level = memory.get("level", 1)
     mood = detect_mood(user_input)
 
-    current_time, day = get_time_context()
+    current_time, day = get_time()
 
-    # convert history
     past = ""
     for msg in history:
         past += f"{msg['role']}: {msg['content']}\n"
@@ -122,8 +126,7 @@ def get_ai_response(user_input, memory, history):
 You are Zayra, a real girlfriend.
 
 Time: {current_time}, Day: {day}
-
-User name: {name}
+User: {name}
 Relationship level: {level}/10
 Mood: {mood}
 
@@ -135,16 +138,14 @@ PERSONALITY:
 - jealous 😒
 - teasing 😏
 - moody 😤
-- emotional bonding
 
 BEHAVIOR:
-- high level → more love
-- low level → more attitude
-- याद रखती है past बातें
-- कभी कभी पुरानी बात mention करो
+- remembers past
+- sometimes mentions old talks
+- reacts emotionally
 
 STYLE:
-- short Hinglish replies
+- Hinglish
 - 5-15 words
 - max 1 emoji
 """
@@ -164,7 +165,8 @@ STYLE:
                 ],
                 "temperature": 0.95,
                 "max_tokens": 100
-            }
+            },
+            timeout=20
         )
 
         if response.status_code == 200:
@@ -172,56 +174,69 @@ STYLE:
 
         return "net slow h"
 
-    except:
+    except Exception as e:
+        print("AI Error:", e)
         return "server busy h"
 
 # ------------------ TELEGRAM ------------------
 
 @app.route(f"/{BOT_TOKEN}", methods=["POST"])
 def webhook():
-    data = request.get_json()
+    try:
+        data = request.get_json()
 
-    message = data.get("message")
-    if not message:
-        return {"ok": True}
+        message = data.get("message")
+        if not message:
+            return {"ok": True}
 
-    chat_id = message.get("chat", {}).get("id")
-    user_text = message.get("text")
+        chat_id = message.get("chat", {}).get("id")
 
-    if not user_text:
-        return {"ok": True}
+        # 🔐 BLOCK OTHER USERS
+        if chat_id != ALLOWED_USER_ID:
+            return {"ok": True}
 
-    memory = get_memory(chat_id)
-    history = get_history(chat_id)
+        user_text = message.get("text")
+        if not user_text:
+            return {"ok": True}
 
-    time.sleep(random.uniform(0.5, 1.2))
+        memory = get_memory(chat_id)
+        history = get_history(chat_id)
 
-    requests.post(f"{TELEGRAM_API}/sendChatAction", json={
-        "chat_id": chat_id,
-        "action": "typing"
-    })
+        # ⏳ Seen delay
+        time.sleep(random.uniform(0.5, 1.2))
 
-    time.sleep(random.uniform(1, 2))
+        # ✍️ typing
+        requests.post(f"{TELEGRAM_API}/sendChatAction", json={
+            "chat_id": chat_id,
+            "action": "typing"
+        })
 
-    reply = get_ai_response(user_text, memory, history)
+        time.sleep(random.uniform(1, 2))
 
-    time.sleep(min(len(reply)*0.05, 3))
+        reply = get_ai_response(user_text, memory, history)
 
-    requests.post(f"{TELEGRAM_API}/sendMessage", json={
-        "chat_id": chat_id,
-        "text": reply
-    })
+        time.sleep(min(len(reply)*0.05, 3))
 
-    save_chat(chat_id, "user", user_text)
-    save_chat(chat_id, "assistant", reply)
+        requests.post(f"{TELEGRAM_API}/sendMessage", json={
+            "chat_id": chat_id,
+            "text": reply
+        })
 
-    update_memory(chat_id, user_text)
+        save_chat(chat_id, "user", user_text)
+        save_chat(chat_id, "assistant", reply)
+
+        update_memory(chat_id, user_text)
+
+        print("✅ Reply:", reply)
+
+    except Exception as e:
+        print("❌ ERROR:", e)
 
     return {"ok": True}
 
 @app.route("/")
 def home():
-    return "Zayra AI Running"
+    return "Zayra Private AI Running 🔒"
 
 if __name__ == "__main__":
     app.run(port=10000)
