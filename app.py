@@ -13,6 +13,8 @@ MONGO_URI = os.getenv("MONGO_URI")
 ALLOWED_USER_ID = 6243559768
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
+# ---------------- DB ----------------
+
 client = MongoClient(MONGO_URI, tlsCAFile=certifi.where())
 db = client['zayra_ai']
 
@@ -35,66 +37,109 @@ def get_history(chat_id):
     msgs.reverse()
     return msgs
 
-# ---------------- HUMAN BRAIN ----------------
+# ---------------- RELATIONSHIP ENGINE ----------------
 
-def decide_behavior(user_text):
+def update_relationship(chat_id, user_text):
 
-    t = user_text.lower()
+    mem = memory_col.find_one({"chat_id": chat_id}) or {}
 
-    # short reply cases
-    if t in ["hmm","ok","hn","acha"]:
-        return "short"
+    attach = mem.get("attachment", 10)
+    mood = mem.get("mood", "normal")
 
-    # emotional
-    if "love" in t or "miss" in t:
-        return "emotional"
+    text = user_text.lower()
 
-    # question
-    if "?" in t:
-        return "answer"
+    # ❤️ attachment growth
+    if any(x in text for x in ["love","miss","cute","acha lagta"]):
+        attach += 2
+    elif len(text) < 4:
+        attach -= 1
+    else:
+        attach += 0.3
 
-    # default random
-    return random.choice(["short","normal","tease"])
+    # 💔 negative behavior
+    if any(x in text for x in ["bye","jao","mat baat karo"]):
+        attach -= 2
+
+    attach = max(0, min(100, attach))
+
+    # 🎭 mood shift
+    if attach < 30:
+        mood = "normal"
+    elif attach < 60:
+        mood = "friendly"
+    elif attach < 80:
+        mood = "caring"
+    elif attach < 95:
+        mood = "attached"
+    else:
+        mood = "gf"
+
+    memory_col.update_one(
+        {"chat_id": chat_id},
+        {"$set": {
+            "attachment": attach,
+            "mood": mood
+        }},
+        upsert=True
+    )
+
+    return attach, mood
 
 # ---------------- AI ----------------
 
-def get_ai_reply(user_input, history, mode):
+def get_ai_reply(user_input, history, attach, mood):
 
     context = ""
     for m in history:
         role = "User" if m["role"] == "user" else "Zayra"
         context += f"{role}: {m['content']}\n"
 
-    length_rule = ""
+    # 💞 behavior style
+    style = ""
 
-    if mode == "short":
-        length_rule = "reply in 1-3 words only"
-    elif mode == "normal":
-        length_rule = "reply in 5-10 words"
-    elif mode == "emotional":
-        length_rule = "slightly emotional 8-15 words"
-    elif mode == "tease":
-        length_rule = "light teasing short reply"
+    if mood == "normal":
+        style = "casual friend"
+    elif mood == "friendly":
+        style = "slightly interested"
+    elif mood == "caring":
+        style = "soft caring tone"
+    elif mood == "attached":
+        style = "emotionally attached, थोड़ा possessive"
+    elif mood == "gf":
+        style = "girlfriend vibe, emotional + teasing + possessive"
 
     prompt = f"""
-You are Zayra (Jaipur, LLB girl).
+You are Zayra (Jaipur, LLB student).
+
+Attachment level: {attach}
+Mood: {mood}
+
+Behavior: {style}
 
 CHAT:
 {context}
 
-User: {user_input}
+USER:
+{user_input}
 
 RULES:
-- Hinglish
-- {length_rule}
-- natural human reply
-- no robotic tone
-- continue same topic
-- sometimes incomplete sentence
 
-GENDER:
-user male → rha hu
-you female → rhi hu
+- Hinglish
+- short replies (3-10 words)
+- natural texting (not perfect grammar)
+- continue same topic
+- no robotic replies
+
+SPECIAL:
+
+- if mood=gf → show slight jealousy
+- if mood=attached → emotional hints
+- if mood=low → neutral tone
+
+EXAMPLES:
+- "tum bhi na"
+- "acha 😏"
+- "miss kiya mujhe?"
 """
 
     res = requests.post(
@@ -116,12 +161,51 @@ you female → rhi hu
 
     return "hmm"
 
+# ---------------- SELF MESSAGE ----------------
+
+def self_message():
+
+    chat_id = ALLOWED_USER_ID
+
+    mem = memory_col.find_one({"chat_id": chat_id}) or {}
+    attach = mem.get("attachment", 10)
+
+    last = history_col.find_one({"chat_id": chat_id}, sort=[("time",-1)])
+
+    if last:
+        gap = datetime.utcnow() - last["time"]
+        if gap < timedelta(minutes=15):
+            return
+
+    if random.random() > 0.5:
+        return
+
+    # 💞 behavior based self msg
+    if attach > 80:
+        msg = random.choice([
+            "tum yaad aa rahe the",
+            "kya kar rahe ho abhi",
+            "miss kar rhi hu thoda"
+        ])
+    else:
+        msg = random.choice([
+            "kya kar rahe ho",
+            "busy ho kya",
+            "acha suno"
+        ])
+
+    requests.post(f"{TELEGRAM_API}/sendMessage", json={
+        "chat_id": chat_id,
+        "text": msg
+    })
+
+    save_chat(chat_id, "assistant", msg)
+
 # ---------------- REPLY ----------------
 
 def send_reply(chat_id, user_text):
 
-    # 👀 thinking delay
-    time.sleep(random.uniform(0.8, 2))
+    time.sleep(random.uniform(0.8,1.8))
 
     requests.post(f"{TELEGRAM_API}/sendChatAction", json={
         "chat_id": chat_id,
@@ -130,17 +214,13 @@ def send_reply(chat_id, user_text):
 
     history = get_history(chat_id)
 
-    # 🧠 brain decision
-    mode = decide_behavior(user_text)
+    attach, mood = update_relationship(chat_id, user_text)
 
-    reply = get_ai_reply(user_text, history, mode)
+    reply = get_ai_reply(user_text, history, attach, mood)
 
-    # 🧠 human imperfection
-    if random.random() < 0.2:
-        reply = reply.lower()
-
-    if random.random() < 0.15:
-        reply = reply[:max(3, len(reply)//2)]  # incomplete sentence
+    # short reply logic
+    if random.random() < 0.25:
+        reply = random.choice(["hmm", "acha", "hn"])
 
     time.sleep(min(max(len(reply)*0.05,1),3))
 
@@ -177,6 +257,11 @@ def webhook():
 
     return {"ok": True}
 
+@app.route("/self")
+def trigger_self():
+    self_message()
+    return "ok"
+
 @app.route("/")
 def home():
-    return "Zayra Brain AI Running"
+    return "Zayra Ultimate GF AI Running"
