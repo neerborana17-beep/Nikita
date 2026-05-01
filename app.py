@@ -2,10 +2,10 @@ import os, requests, random, time
 from flask import Flask, request
 from pymongo import MongoClient
 import certifi
+from datetime import datetime
+import pytz
 
 app = Flask(__name__)
-
-# ------------------ ENV ------------------
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
@@ -16,105 +16,137 @@ TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 # ------------------ DB ------------------
 
 memory_col = None
+history_col = None
 
-try:
-    if MONGO_URI:
-        client = MongoClient(MONGO_URI, tlsCAFile=certifi.where())
-        db = client['zayra_ai']
-        memory_col = db['user_memory']
-        print("✅ Mongo Connected")
-    else:
-        print("⚠️ No Mongo URI found")
-except Exception as e:
-    print("❌ Mongo Error:", e)
-    memory_col = None
+if MONGO_URI:
+    client = MongoClient(MONGO_URI, tlsCAFile=certifi.where())
+    db = client['zayra_ai']
+    memory_col = db['user_memory']
+    history_col = db['chat_history']
 
-# ------------------ HUMAN BEHAVIOR ------------------
+# ------------------ TIME ------------------
 
-def typing_delay(text):
-    return min(len(text) * 0.05 + random.uniform(0.5, 1.5), 4)
+def get_time_context():
+    ist = pytz.timezone('Asia/Kolkata')
+    now = datetime.now(ist)
 
-def send_typing(chat_id):
-    try:
-        requests.post(f"{TELEGRAM_API}/sendChatAction", json={
-            "chat_id": chat_id,
-            "action": "typing"
-        })
-    except Exception as e:
-        print("Typing error:", e)
-
-def human_pause():
-    time.sleep(random.uniform(0.5, 1.2))
+    return now.strftime("%I:%M %p"), now.strftime("%A")
 
 # ------------------ MEMORY ------------------
 
-def get_user_memory(chat_id):
-    try:
-        if memory_col is not None:
-            user = memory_col.find_one({"chat_id": chat_id})
-            return user if user else {}
-    except Exception as e:
-        print("Memory fetch error:", e)
+def extract_name(text):
+    t = text.lower()
+    if "i am" in t:
+        return text.split("i am")[-1].strip()
+    if "i'm" in t:
+        return text.split("i'm")[-1].strip()
+    if "mera naam" in t:
+        return text.split()[-1]
+    return None
+
+def get_memory(chat_id):
+    if memory_col:
+        user = memory_col.find_one({"chat_id": chat_id})
+        return user if user else {}
     return {}
 
 def update_memory(chat_id, user_input):
-    try:
-        if memory_col is None:
-            return
+    if not memory_col:
+        return
 
-        data = {"chat_id": chat_id}
+    data = {"chat_id": chat_id}
 
-        if "mera naam" in user_input.lower():
-            name = user_input.split()[-1]
-            data["name"] = name
+    name = extract_name(user_input)
+    if name:
+        data["name"] = name.capitalize()
 
-        memory_col.update_one(
-            {"chat_id": chat_id},
-            {"$set": data},
-            upsert=True
-        )
-    except Exception as e:
-        print("Memory update error:", e)
+    # relationship level increase
+    user = memory_col.find_one({"chat_id": chat_id}) or {}
+    level = user.get("level", 1)
+    level = min(level + 0.1, 10)
+    data["level"] = level
 
-# ------------------ AI ------------------
+    memory_col.update_one(
+        {"chat_id": chat_id},
+        {"$set": data},
+        upsert=True
+    )
+
+# ------------------ CHAT HISTORY ------------------
+
+def save_chat(chat_id, role, content):
+    if history_col:
+        history_col.insert_one({
+            "chat_id": chat_id,
+            "role": role,
+            "content": content,
+            "time": datetime.utcnow()
+        })
+
+def get_history(chat_id):
+    if history_col:
+        msgs = list(history_col.find({"chat_id": chat_id})
+                    .sort("time", -1).limit(10))
+        msgs.reverse()
+        return msgs
+    return []
+
+# ------------------ MOOD ------------------
 
 def detect_mood(text):
     t = text.lower()
-    if "sad" in t or "akela" in t:
+    if "sad" in t:
         return "emotional"
-    elif "miss" in t:
+    if "love" in t or "miss" in t:
         return "romantic"
-    elif "gussa" in t:
+    if "gussa" in t:
         return "angry"
     return "normal"
 
-def get_ai_response(user_input, memory):
+# ------------------ AI ------------------
 
-    mood = detect_mood(user_input)
+def get_ai_response(user_input, memory, history):
+
     name = memory.get("name", "")
+    level = memory.get("level", 1)
+    mood = detect_mood(user_input)
+
+    current_time, day = get_time_context()
+
+    # convert history
+    past = ""
+    for msg in history:
+        past += f"{msg['role']}: {msg['content']}\n"
 
     system_prompt = f"""
-You are Zayra, a 19-year-old girl from Rajasthan.
+You are Zayra, a real girlfriend.
 
-Talk like a real WhatsApp girl.
-
-STYLE:
-- 5 to 15 words
-- casual Hindi texting
-- natural, soft, slightly playful
-- max 1 emoji
-
-PERSONALITY:
-- remembers user
-- emotionally connected
-- acts familiar if name known
+Time: {current_time}, Day: {day}
 
 User name: {name}
+Relationship level: {level}/10
 Mood: {mood}
 
-RULES:
-- Hindi only
-- no robotic replies
+Past chats:
+{past}
+
+PERSONALITY:
+- caring ❤️
+- jealous 😒
+- teasing 😏
+- moody 😤
+- emotional bonding
+
+BEHAVIOR:
+- high level → more love
+- low level → more attitude
+- याद रखती है past बातें
+- कभी कभी पुरानी बात mention करो
+
+STYLE:
+- short Hinglish replies
+- 5-15 words
+- max 1 emoji
 """
 
     try:
@@ -130,94 +162,66 @@ RULES:
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_input}
                 ],
-                "temperature": 0.9,
+                "temperature": 0.95,
                 "max_tokens": 100
-            },
-            timeout=20
+            }
         )
 
         if response.status_code == 200:
-            reply = response.json()['choices'][0]['message']['content']
-            return clean_text(reply)
+            return response.json()['choices'][0]['message']['content']
 
-        print("❌ API ERROR:", response.text)
-        return "net slow lag raha h"
+        return "net slow h"
 
-    except Exception as e:
-        print("❌ AI ERROR:", e)
-        return "server busy h abhi"
+    except:
+        return "server busy h"
 
-def clean_text(text):
-    text = text.strip()
-    if len(text) > 120:
-        text = text[:120]
-    return text
-
-# ------------------ TELEGRAM WEBHOOK ------------------
+# ------------------ TELEGRAM ------------------
 
 @app.route(f"/{BOT_TOKEN}", methods=["POST"])
 def webhook():
-    try:
-        data = request.get_json()
+    data = request.get_json()
 
-        print("📩 INCOMING:", data)
+    message = data.get("message")
+    if not message:
+        return {"ok": True}
 
-        if not data:
-            return {"ok": True}
+    chat_id = message.get("chat", {}).get("id")
+    user_text = message.get("text")
 
-        message = data.get("message")
-        if not message:
-            return {"ok": True}
+    if not user_text:
+        return {"ok": True}
 
-        chat = message.get("chat")
-        if not chat:
-            return {"ok": True}
+    memory = get_memory(chat_id)
+    history = get_history(chat_id)
 
-        chat_id = chat.get("id")
-        user_text = message.get("text")
+    time.sleep(random.uniform(0.5, 1.2))
 
-        if not user_text:
-            return {"ok": True}
+    requests.post(f"{TELEGRAM_API}/sendChatAction", json={
+        "chat_id": chat_id,
+        "action": "typing"
+    })
 
-        # 🧠 Memory
-        memory = get_user_memory(chat_id)
+    time.sleep(random.uniform(1, 2))
 
-        # ⏳ Seen delay
-        time.sleep(random.uniform(0.5, 1.2))
+    reply = get_ai_response(user_text, memory, history)
 
-        # ✍️ Typing
-        send_typing(chat_id)
-        human_pause()
+    time.sleep(min(len(reply)*0.05, 3))
 
-        # 🤖 AI reply
-        reply = get_ai_response(user_text, memory)
+    requests.post(f"{TELEGRAM_API}/sendMessage", json={
+        "chat_id": chat_id,
+        "text": reply
+    })
 
-        # ⏳ Typing delay
-        time.sleep(typing_delay(reply))
+    save_chat(chat_id, "user", user_text)
+    save_chat(chat_id, "assistant", reply)
 
-        # 📩 Send message
-        requests.post(f"{TELEGRAM_API}/sendMessage", json={
-            "chat_id": chat_id,
-            "text": reply
-        })
-
-        # 💾 Save memory
-        update_memory(chat_id, user_text)
-
-        print("✅ Reply:", reply)
-
-    except Exception as e:
-        print("❌ TELEGRAM ERROR:", e)
+    update_memory(chat_id, user_text)
 
     return {"ok": True}
 
-# ------------------ HOME ------------------
-
 @app.route("/")
 def home():
-    return "Zayra AI Running 🚀"
-
-# ------------------ RUN ------------------
+    return "Zayra AI Running"
 
 if __name__ == "__main__":
     app.run(port=10000)
