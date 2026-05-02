@@ -1,6 +1,6 @@
 flask
 requests
+pytz
 pymongo
 certifi
 gunicorn
-pytz
