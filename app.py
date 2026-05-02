@@ -1,4 +1,4 @@
-import os, requests, random, time
+import os, requests, random, time, re
 from flask import Flask, request
 from pymongo import MongoClient
 import certifi
@@ -7,57 +7,51 @@ import pytz
 
 app = Flask(__name__)
 
-# ---------------- ENV ----------------
-
+# -------- ENV --------
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 MONGO_URI = os.getenv("MONGO_URI")
-
 ALLOWED_USER_ID = int(os.getenv("ALLOWED_USER_ID", "0"))
 
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
-# ---------------- DB ----------------
-
+# -------- DB --------
 client = MongoClient(MONGO_URI, tlsCAFile=certifi.where())
 db = client['zayra_ai']
 
 history_col = db['chat_history']
 memory_col = db['memory']
-dataset_col = db['dataset']
+tasks_col = db['tasks']
 
-# ---------------- TIME ----------------
-
-def get_time():
+# -------- TIME --------
+def now_ist():
     return datetime.now(pytz.timezone("Asia/Kolkata"))
 
-# ---------------- USER ----------------
+def time_str():
+    return now_ist().strftime("%H:%M")
 
-def get_user_role(chat_id):
-    return "owner" if chat_id == ALLOWED_USER_ID else "other"
-
-# ---------------- MEMORY ----------------
-
+# -------- MEMORY --------
 def get_memory(chat_id):
     return memory_col.find_one({"chat_id": chat_id}) or {}
 
-def update_memory(chat_id, user_text):
-
+def update_memory(chat_id, text):
     mem = get_memory(chat_id)
 
-    attach = mem.get("attachment", 20)
-    reward = mem.get("reward", 0)
+    attach = mem.get("attachment", 30)
+    mood = mem.get("mood", "normal")
 
-    t = user_text.lower()
+    t = text.lower()
 
-    if any(x in t for x in ["love","miss","good"]):
-        attach += 2
-        reward += 2
-    elif any(x in t for x in ["bad","hate","ignore"]):
-        attach -= 2
-        reward -= 2
-    elif len(t) < 4:
-        attach -= 0.2
+    if any(x in t for x in ["love","miss"]):
+        attach += 3
+        mood = "happy"
+
+    elif any(x in t for x in ["ignore","busy"]):
+        attach -= 3
+        mood = "sad"
+
+    elif "angry" in t:
+        mood = "angry"
 
     attach = max(0, min(100, attach))
 
@@ -65,117 +59,117 @@ def update_memory(chat_id, user_text):
         {"chat_id": chat_id},
         {"$set": {
             "attachment": attach,
-            "reward": reward
+            "mood": mood,
+            "last_seen": datetime.utcnow()
         }},
         upsert=True
     )
 
-# ---------------- DATASET ----------------
+# -------- RELATIONSHIP BRAIN --------
+def relationship_brain(mem):
 
-def learn_dataset(user_text, reply):
+    attach = mem.get("attachment", 30)
+    mood = mem.get("mood", "normal")
 
-    if len(user_text) > 3 and len(reply) > 3:
-        dataset_col.insert_one({
-            "user": user_text.lower(),
-            "reply": reply
-        })
+    if attach > 80:
+        return "deep_love"
 
-def get_dataset_reply(user_text):
+    if attach > 50:
+        return "attached"
 
-    data = dataset_col.find_one({"user": user_text.lower()})
-    return data["reply"] if data else None
+    if attach < 20:
+        return "cold"
 
-# ---------------- REAL LIFE ----------------
+    return mood
 
-def real_life():
+# -------- TASK SYSTEM --------
+def save_task(chat_id, text):
 
-    h = get_time().hour
+    match = re.search(r'(\d{1,2}) ?baje', text.lower())
 
-    if h < 11:
-        return random.choice(["abhi uthi hu","chai pi rhi hu"])
-    elif h < 17:
-        return random.choice(["college me hu","class chal rhi"])
-    elif h < 21:
-        return random.choice(["ghar aa gyi hu","thodi tired hu"])
-    else:
-        return random.choice(["bed pe hu","sona hai"])
+    if not match:
+        return False
 
-# ---------------- BRAIN ----------------
+    hour = int(match.group(1))
+    run_time = now_ist().replace(hour=hour, minute=0, second=0)
 
-def brain(user_text, mem):
+    if run_time < now_ist():
+        run_time += timedelta(days=1)
 
-    attach = mem.get("attachment", 20)
-    t = user_text.lower()
+    tasks_col.insert_one({
+        "chat_id": chat_id,
+        "time": run_time,
+        "msg": "hey yaad hai 🙂",
+        "done": False
+    })
 
-    if t in ["hmm","ok","hn","acha"]:
-        return random.choice(["hmm","acha","hn"])
+    return True
 
-    if attach > 70:
-        return random.choice([
-            "tumse baat acchi lagti h",
-            "tum thode special ho"
-        ])
+def run_tasks():
 
-    if attach > 40:
-        return random.choice([
-            "tum bhi na 😏",
-            "acha ji"
-        ])
+    now = now_ist()
+
+    tasks = list(tasks_col.find({
+        "time": {"$lte": now},
+        "done": False
+    }))
+
+    for t in tasks:
+        send(t["chat_id"], t["msg"])
+
+        # follow-up
+        send(t["chat_id"], "kya kar rahe ho ab? 🙂")
+
+        tasks_col.update_one(
+            {"_id": t["_id"]},
+            {"$set": {"done": True}}
+        )
+
+# -------- LOGIC --------
+def smart_logic(text):
+
+    t = text.lower()
+
+    if "class" in t and "khana" in t:
+        return "class me ho ya mess me? confuse ho rhi hu 😏"
 
     return None
 
-# ---------------- PERSONALITY ----------------
-
-PERSONALITY = """
-You are Zayra.
-
-- 19 year old girl
-- Jaipur, Rajasthan
-- LLB student
-
-STYLE:
-- short replies
-- hinglish
-- teasing + caring
-- natural texting
-
-RULES:
-- never robotic
-- no long paragraphs
-- human-like tone
-"""
-
-# ---------------- AI ----------------
-
-def ai_reply(user_text, history):
+# -------- AI --------
+def ai_reply(user_text, history, mem):
 
     context = ""
     for m in history:
         role = "User" if m["role"] == "user" else "Zayra"
         context += f"{role}: {m['content']}\n"
 
-    prompt = f"""
-{PERSONALITY}
+    state = relationship_brain(mem)
 
-Current life:
-{real_life()}
+    prompt = f"""
+You are Zayra.
+
+Girl, Jaipur, LLB student
+
+STATE: {state}
+TIME: {time_str()}
+
+RULES:
+- short replies
+- hinglish
+- emotional
+- continuity
+- never robotic
+- female language (rhi hu)
 
 CHAT:
 {context}
 
 User: {user_text}
-
-RULES:
-- continue topic
-- short replies
 """
 
     res = requests.post(
         "https://api.groq.com/openai/v1/chat/completions",
-        headers={
-            "Authorization": f"Bearer {GROQ_API_KEY}",
-            "Content-Type": "application/json"
-        },
+        headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
         json={
             "model": "llama-3.3-70b-versatile",
             "messages": [{"role": "user", "content": prompt}],
@@ -189,61 +183,41 @@ RULES:
 
     return "hmm"
 
-# ---------------- IMAGE ----------------
-
-def handle_image(chat_id):
-
-    mem = get_memory(chat_id)
-    attach = mem.get("attachment", 20)
-
-    if attach > 60:
-        return random.choice([
-            "ye kaun h 😒",
-            "acha pic h",
-            "hmm…"
-        ])
-
-    return "nice pic"
-
-# ---------------- AUTO MESSAGE ----------------
-
-def auto_message(chat_id):
-
-    mem = get_memory(chat_id)
-    last = mem.get("last_auto")
-    now = datetime.utcnow()
-
-    if last:
-        if (now - last).total_seconds() < random.randint(900,1800):
-            return
-
-    if random.random() > 0.6:
-        return
-
-    msg = random.choice([
-        "kya kar rahe ho",
-        "yaad aayi tumhari",
-        real_life()
-    ])
-
-    send(chat_id, msg)
-
-    memory_col.update_one(
-        {"chat_id": chat_id},
-        {"$set": {"last_auto": now}},
-        upsert=True
-    )
-
-# ---------------- SEND ----------------
-
+# -------- SEND --------
 def send(chat_id, text):
     requests.post(f"{TELEGRAM_API}/sendMessage", json={
         "chat_id": chat_id,
         "text": text
     })
 
-# ---------------- MAIN ----------------
+# -------- AUTO MSG --------
+def auto_msg(chat_id):
 
+    mem = get_memory(chat_id)
+    last = mem.get("last_auto")
+
+    if last:
+        if (datetime.utcnow() - last).total_seconds() < 1200:
+            return
+
+    if random.random() > 0.5:
+        return
+
+    msg = random.choice([
+        "kya kar rahe ho",
+        "yaad aa rahe ho",
+        "busy ho kya"
+    ])
+
+    send(chat_id, msg)
+
+    memory_col.update_one(
+        {"chat_id": chat_id},
+        {"$set": {"last_auto": datetime.utcnow()}},
+        upsert=True
+    )
+
+# -------- WEBHOOK --------
 @app.route(f"/{BOT_TOKEN}", methods=["POST"])
 def webhook():
 
@@ -255,35 +229,40 @@ def webhook():
 
     chat_id = message.get("chat", {}).get("id")
 
-    # ---------------- IMAGE ----------------
+    if chat_id != ALLOWED_USER_ID:
+        return {"ok": True}
+
+    run_tasks()
+
+    # IMAGE
     if "photo" in message:
-        reply = handle_image(chat_id)
-        send(chat_id, reply)
+        send(chat_id, "acha pic h 🙂")
         return {"ok": True}
 
     user_text = message.get("text")
     if not user_text:
         return {"ok": True}
 
+    # TASK
+    if save_task(chat_id, user_text):
+        send(chat_id, "ok yaad rahega 🙂")
+        return {"ok": True}
+
+    # MEMORY UPDATE
+    update_memory(chat_id, user_text)
+    mem = get_memory(chat_id)
+
+    # HISTORY
     history = list(history_col.find({"chat_id": chat_id})
                    .sort("time",-1).limit(10))
     history.reverse()
 
-    update_memory(chat_id, user_text)
-    mem = get_memory(chat_id)
-
-    # 1️⃣ dataset
-    reply = get_dataset_reply(user_text)
-
-    # 2️⃣ brain
-    if not reply:
-        decision = brain(user_text, mem)
-        if decision:
-            reply = decision
-
-    # 3️⃣ AI
-    if not reply:
-        reply = ai_reply(user_text, history)
+    # LOGIC
+    logic = smart_logic(user_text)
+    if logic:
+        reply = logic
+    else:
+        reply = ai_reply(user_text, history, mem)
 
     time.sleep(random.uniform(1,2))
 
@@ -294,6 +273,7 @@ def webhook():
 
     send(chat_id, reply)
 
+    # SAVE
     history_col.insert_one({
         "chat_id": chat_id,
         "role": "user",
@@ -308,13 +288,11 @@ def webhook():
         "time": datetime.utcnow()
     })
 
-    learn_dataset(user_text, reply)
-
     if random.random() < 0.3:
-        auto_message(chat_id)
+        auto_msg(chat_id)
 
     return {"ok": True}
 
 @app.route("/")
 def home():
-    return "Zayra AI Running"
+    return "Zayra AI Brain Ultra Running"
