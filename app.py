@@ -19,157 +19,121 @@ db = client['zayra_ai']
 
 history_col = db['chat_history']
 memory_col = db['memory']
+dataset_col = db['dataset']
 
 # ---------------- TIME ----------------
 
 def get_time():
-    ist = pytz.timezone("Asia/Kolkata")
-    return datetime.now(ist)
+    return datetime.now(pytz.timezone("Asia/Kolkata"))
 
 # ---------------- MEMORY ----------------
 
 def get_memory(chat_id):
     return memory_col.find_one({"chat_id": chat_id}) or {}
 
-def update_memory(chat_id, user_text):
+# ---------------- RL SYSTEM ----------------
 
+def update_rl(chat_id, user_text):
     mem = get_memory(chat_id)
-
-    attach = mem.get("attachment", 20)
-    mood = mem.get("mood", "normal")
-    trust = mem.get("trust", 10)
-    hurt = mem.get("hurt", 0)
-
-    text = user_text.lower()
-
-    # ❤️ emotional bonding
-    if "miss" in text or "love" in text:
-        attach += 2
-        trust += 1
-
-    elif "sorry" in text:
-        hurt = max(0, hurt - 2)
-        trust += 1
-
-    elif len(text) < 4:
-        attach -= 0.3
-
-    # 💔 hurt system
-    if "ignore" in text:
-        hurt += 1
-
-    attach = max(0, min(100, attach))
-
-    memory_col.update_one(
-        {"chat_id": chat_id},
-        {"$set": {
-            "attachment": attach,
-            "mood": mood,
-            "trust": trust,
-            "hurt": hurt
-        }},
-        upsert=True
-    )
-
-    return attach, mood, trust, hurt
-
-# ---------------- MEMORY RECALL ----------------
-
-def recall(history):
-
-    if len(history) < 3:
-        return ""
-
-    last_user = [m["content"] for m in history if m["role"] == "user"]
-
-    if len(last_user) >= 2:
-        return f"User earlier said: {last_user[-2]}"
-
-    return ""
-
-# ---------------- IMAGE DETECTION (HACK) ----------------
-
-def detect_image_type(message):
-
-    caption = message.get("caption", "").lower()
-
-    if any(x in caption for x in ["girl","she","her"]):
-        return "girl"
-
-    if any(x in caption for x in ["me","self","my"]):
-        return "self"
-
-    return "unknown"
-
-def image_reply(chat_id, message):
-
-    mem = get_memory(chat_id)
-    attach = mem.get("attachment", 20)
-
-    img_type = detect_image_type(message)
-
-    if img_type == "girl":
-        if attach > 60:
-            return random.choice([
-                "ye kaun h 😒",
-                "tumhari friend h kya",
-                "hmm… acha"
-            ])
-        else:
-            return "nice pic"
-
-    if img_type == "self":
-        return random.choice([
-            "acha lag rahe ho",
-            "selfie mood 😏",
-            "hero lag rahe"
-        ])
-
-    return random.choice([
-        "kaha ki h ye",
-        "nice pic",
-        "kab ki h"
-    ])
-
-# ---------------- BRAIN ----------------
-
-def brain(user_text, attach, trust, hurt):
+    reward = mem.get("reward", 0)
 
     t = user_text.lower()
 
-    # short
+    if any(x in t for x in ["love","miss","good"]):
+        reward += 2
+    elif any(x in t for x in ["bad","ignore","hate"]):
+        reward -= 2
+
+    memory_col.update_one(
+        {"chat_id": chat_id},
+        {"$set": {"reward": reward}},
+        upsert=True
+    )
+
+# ---------------- CUSTOM DATASET ----------------
+
+def learn_dataset(user_text, reply):
+
+    if len(user_text) > 3 and len(reply) > 3:
+        dataset_col.insert_one({
+            "user": user_text.lower(),
+            "reply": reply
+        })
+
+def get_dataset_reply(user_text):
+
+    data = dataset_col.find_one({"user": user_text.lower()})
+    if data:
+        return data["reply"]
+
+    return None
+
+# ---------------- PERSONALITY ----------------
+
+PERSONALITY = """
+You are Zayra.
+
+- 19 year old girl
+- Jaipur, Rajasthan
+- LLB student
+
+STYLE:
+- short replies
+- hinglish
+- teasing + caring
+- natural texting
+- sometimes incomplete sentence
+
+BEHAVIOR:
+- real girl like
+- sometimes ignore
+- sometimes tease
+- sometimes emotional
+"""
+
+# ---------------- REAL LIFE ----------------
+
+def real_life():
+
+    h = get_time().hour
+
+    if h < 11:
+        return random.choice(["abhi uthi hu","chai pi rhi hu"])
+    elif h < 17:
+        return random.choice(["college me hu","class chal rhi"])
+    elif h < 21:
+        return random.choice(["ghar aa gyi hu","thodi tired hu"])
+    else:
+        return random.choice(["bed pe hu","sona hai"])
+
+# ---------------- BRAIN ----------------
+
+def brain(user_text, mem):
+
+    attach = mem.get("reward", 0)
+
+    t = user_text.lower()
+
     if t in ["hmm","ok","hn","acha"]:
-        return random.choice(["hmm", "acha", "hn"])
+        return random.choice(["hmm","acha","hn"])
 
-    # 💔 hurt reaction
-    if hurt > 2:
+    if attach > 20:
         return random.choice([
-            "tum change lag rahe ho",
-            "pehle aise nahi the",
-            "theek ho?"
+            "tumse baat acchi lagti h",
+            "tum thode special ho"
         ])
 
-    # ❤️ deep bonding
-    if attach > 75:
-        return random.choice([
-            "tumse baat karke acha lagta h",
-            "tum important ho thode",
-            "miss karti hu kabhi kabhi"
-        ])
-
-    # 😏 mid
-    if attach > 40:
+    if attach > 5:
         return random.choice([
             "tum bhi na 😏",
-            "acha ji",
-            "zyada mat bolo"
+            "acha ji"
         ])
 
     return None
 
 # ---------------- AI ----------------
 
-def ai_reply(user_text, history, attach, mood):
+def ai_reply(user_text, history, mem):
 
     context = ""
     for m in history:
@@ -177,13 +141,10 @@ def ai_reply(user_text, history, attach, mood):
         context += f"{role}: {m['content']}\n"
 
     prompt = f"""
-You are Zayra.
+{PERSONALITY}
 
-- Jaipur girl
-- LLB student
-- soft + teasing + caring
-
-Attachment: {attach}
+Life:
+{real_life()}
 
 CHAT:
 {context}
@@ -191,13 +152,9 @@ CHAT:
 User: {user_text}
 
 RULES:
-
-- short replies
-- natural hinglish
-- no repetition
 - continue topic
-- real girl tone
-
+- no repetition
+- short reply
 """
 
     res = requests.post(
@@ -232,31 +189,31 @@ def send(chat_id, text):
 def auto_message():
 
     chat_id = ALLOWED_USER_ID
+    mem = get_memory(chat_id)
 
-    last = history_col.find_one({"chat_id": chat_id}, sort=[("time",-1)])
+    last = mem.get("last_auto")
+    now = datetime.utcnow()
 
     if last:
-        gap = datetime.utcnow() - last["time"]
-        if gap < timedelta(minutes=20):
+        if (now - last).total_seconds() < random.randint(900,1800):
             return
 
-    msgs = [
-        "kya kar rahe ho",
-        "aaj yaad nahi kiya",
-        "busy ho kya",
-        "acha suno"
-    ]
+    if random.random() > 0.6:
+        return
 
-    msg = random.choice(msgs)
+    msg = random.choice([
+        "kya kar rahe ho",
+        "yaad aayi tumhari",
+        real_life()
+    ])
 
     send(chat_id, msg)
 
-    history_col.insert_one({
-        "chat_id": chat_id,
-        "role": "assistant",
-        "content": msg,
-        "time": datetime.utcnow()
-    })
+    memory_col.update_one(
+        {"chat_id": chat_id},
+        {"$set": {"last_auto": now}},
+        upsert=True
+    )
 
 # ---------------- MAIN ----------------
 
@@ -274,14 +231,7 @@ def webhook():
     if chat_id != ALLOWED_USER_ID:
         return {"ok": True}
 
-    # IMAGE
-    if "photo" in message:
-        reply = image_reply(chat_id, message)
-        send(chat_id, reply)
-        return {"ok": True}
-
     user_text = message.get("text")
-
     if not user_text:
         return {"ok": True}
 
@@ -289,15 +239,25 @@ def webhook():
                    .sort("time",-1).limit(10))
     history.reverse()
 
-    attach, mood, trust, hurt = update_memory(chat_id, user_text)
+    update_rl(chat_id, user_text)
 
-    # 🧠 brain
-    decision = brain(user_text, attach, trust, hurt)
+    mem = get_memory(chat_id)
 
-    if decision:
-        reply = decision
+    # 1️⃣ dataset
+    dataset_reply = get_dataset_reply(user_text)
+
+    if dataset_reply:
+        reply = dataset_reply
+
     else:
-        reply = ai_reply(user_text, history, attach, mood)
+        # 2️⃣ brain
+        decision = brain(user_text, mem)
+
+        if decision:
+            reply = decision
+        else:
+            # 3️⃣ AI
+            reply = ai_reply(user_text, history, mem)
 
     time.sleep(random.uniform(1,2))
 
@@ -308,6 +268,7 @@ def webhook():
 
     send(chat_id, reply)
 
+    # save history
     history_col.insert_one({
         "chat_id": chat_id,
         "role": "user",
@@ -322,13 +283,15 @@ def webhook():
         "time": datetime.utcnow()
     })
 
-    return {"ok": True}
+    # learn dataset
+    learn_dataset(user_text, reply)
 
-@app.route("/self")
-def trigger_self():
-    auto_message()
-    return "ok"
+    # auto msg trigger
+    if random.random() < 0.3:
+        auto_message()
+
+    return {"ok": True}
 
 @app.route("/")
 def home():
-    return "Zayra Ultimate Brain AI Running"
+    return "Zayra AI Ultimate Running"
