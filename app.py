@@ -1,8 +1,8 @@
-import os, requests, random, time, re, threading
+import os, requests, random, time, threading
 from flask import Flask, request
 from pymongo import MongoClient
 import certifi
-from datetime import datetime, timedelta
+from datetime import datetime
 import pytz
 
 app = Flask(__name__)
@@ -19,106 +19,76 @@ db = client['zayra_ai']
 
 history_col = db['chat']
 memory_col = db['memory']
-tasks_col = db['tasks']
 
 # -------- TIME --------
 def now_ist():
     return datetime.now(pytz.timezone("Asia/Kolkata"))
 
 def is_sleep_time():
-    hour = now_ist().hour
-    return 0 <= hour <= 5
+    return 0 <= now_ist().hour <= 5
 
 # -------- MEMORY --------
 def get_memory(chat_id):
     return memory_col.find_one({"chat_id": chat_id}) or {}
 
 def update_memory(chat_id, text):
-
     mem = get_memory(chat_id)
+    now = datetime.utcnow()
 
-    attach = mem.get("attachment", 30)
-    mood = mem.get("mood", "normal")
-
-    t = text.lower()
-
-    if any(x in t for x in ["love","miss","care"]):
-        attach += 3
-
-    if "ignore" in t:
-        attach -= 5
-        mood = "sad"
-
-    if "sorry" in t:
-        mood = "soft"
-
-    # mood swings
-    if random.random() < 0.1:
-        mood = random.choice(["happy","sad","normal","attitude","jealous"])
+    last = mem.get("last_user_time")
+    gap = 0
+    if last:
+        gap = (now - last).total_seconds()
 
     memory_col.update_one(
         {"chat_id": chat_id},
         {"$set": {
-            "attachment": max(0,min(100,attach)),
-            "mood": mood,
-            "last_seen": datetime.utcnow()
+            "last_user_time": now,
+            "last_gap": gap
         }},
         upsert=True
     )
 
-# -------- ANTI REPEAT --------
-def is_repeated(chat_id, reply):
+# -------- DOUBLE MESSAGE --------
+def merge_messages(chat_id, new_text):
+
     last = history_col.find_one(
-        {"chat_id": chat_id, "role": "assistant"},
+        {"chat_id": chat_id, "role": "user"},
         sort=[("time",-1)]
     )
+
     if not last:
-        return False
-    return last["content"].lower() == reply.lower()
+        return new_text
 
-# -------- GRAMMAR FIX --------
-def fix_text(text):
-    fixes = {
-        "dekhi rhi hu": "dekh rhi hu",
-        "mai hu": "main hu"
-    }
-    for k,v in fixes.items():
-        text = text.replace(k, v)
-    return text
+    gap = (datetime.utcnow() - last["time"]).total_seconds()
 
-# -------- JEALOUSY --------
-def jealousy_trigger(text):
-    if any(x in text.lower() for x in ["ladki","girl","dusri"]):
+    if gap < 15:
+        return last["content"] + " " + new_text
+
+    return new_text
+
+# -------- SHORT MSG --------
+def handle_short(original_text):
+
+    t = original_text.lower().strip()
+
+    if t in ["hmm","ok","hn","acha"]:
         return random.choice([
-            "acha kisi aur se baat ho rahi hai",
-            "nice mujhe bhool gaye",
-            "acha ab time nahi hai mere liye"
+            "bas itna hi",
+            "kuch bolna hai kya",
+            "itna short kyun"
         ])
+
     return None
 
-# -------- REAL REACTION --------
-def real_reaction(chat_id):
-    mem = get_memory(chat_id)
-    last = mem.get("last_seen")
+# -------- THINKING ENGINE --------
+def thinking_engine(text):
 
-    if not last:
-        return None
+    if len(text.split()) < 3:
+        if random.random() < 0.3:
+            return random.choice(["hmm","acha"])
 
-    diff = (datetime.utcnow() - last).total_seconds()
-
-    if diff < 60:
-        return None
-
-    if diff < 180:
-        return random.choice([
-            "reply dene me time lagta hai kya",
-            "busy ho kya"
-        ])
-
-    return random.choice([
-        "rehne do baat nahi karni",
-        "jab mann ho tab baat karna"
-    ])
+    return None
 
 # -------- AI --------
 def ai_reply(text, history):
@@ -133,15 +103,18 @@ def ai_reply(text, history):
         tone = "sleepy"
 
     prompt = f"""
-You are Zayra.
+You are Zayra (real indian girl)
 
+STYLE:
 - hinglish
-- max 8 words
+- natural
+- mostly short replies (5-12 words)
+- sometimes slightly longer if emotional
 - no emoji
-- consistent personality
-- real girl behavior
 - no repetition
-- tone: {tone}
+- think before replying
+
+TONE: {tone}
 
 CHAT:
 {context}
@@ -156,7 +129,7 @@ User: {text}
             "model":"llama-3.3-70b-versatile",
             "messages":[{"role":"user","content":prompt}],
             "temperature":0.9,
-            "max_tokens":50
+            "max_tokens":80
         }
     )
 
@@ -165,35 +138,31 @@ User: {text}
 
     return "hmm"
 
-# -------- SELF MESSAGE GENERATOR --------
-def generate_self_message(mem):
+# -------- CONTROL --------
+def control_reply(reply):
 
-    mood = mem.get("mood","normal")
+    words = reply.split()
 
-    base = [
-        "kya kar rahe ho",
-        "kaise ho",
-        "khana khaya kya",
-        "busy ho kya",
-        "arey mujhe bhi yaad kar lo"
-    ]
+    if len(words) > 12:
+        reply = " ".join(words[:10])
 
-    line = random.choice(base)
+    if len(words) < 2:
+        return "hmm"
 
-    if mood == "sad":
-        line = "aaj mood thoda off hai"
+    return reply
 
-    elif mood == "jealous":
-        line = "lagta hai kisi aur se baat ho rahi hai"
+# -------- REPEAT CHECK --------
+def is_repeated(chat_id, reply):
 
-    variations = [
-        line,
-        "waise " + line,
-        line + " batao na",
-        line + " ya busy ho"
-    ]
+    last = history_col.find_one(
+        {"chat_id": chat_id, "role": "assistant"},
+        sort=[("time",-1)]
+    )
 
-    return random.choice(variations)
+    if not last:
+        return False
+
+    return last["content"].lower() == reply.lower()
 
 # -------- SELF MESSAGE --------
 def smart_self_message(chat_id):
@@ -205,9 +174,9 @@ def smart_self_message(chat_id):
     now = datetime.utcnow()
 
     last_self = mem.get("last_self")
-    last_seen = mem.get("last_seen")
+    last_user = mem.get("last_user_time")
 
-    if last_seen and (now - last_seen).total_seconds() < 900:
+    if last_user and (now - last_user).total_seconds() < 1800:
         return
 
     gap = random.randint(3600,28800)
@@ -218,7 +187,15 @@ def smart_self_message(chat_id):
     if random.random() < 0.5:
         return
 
-    msg = generate_self_message(mem)
+    msgs = [
+        "kya kar rahe ho",
+        "kaise ho",
+        "khana khaya kya",
+        "busy ho kya",
+        "arey mujhe bhi yaad kar lo"
+    ]
+
+    msg = random.choice(msgs)
 
     send(chat_id, msg)
 
@@ -236,8 +213,10 @@ def auto_loop():
 
 # -------- SEND --------
 def send(chat_id, text):
-    requests.post(f"{TELEGRAM_API}/sendMessage",
-                  json={"chat_id": chat_id, "text": text})
+    requests.post(
+        f"{TELEGRAM_API}/sendMessage",
+        json={"chat_id": chat_id, "text": text}
+    )
 
 # -------- WEBHOOK --------
 @app.route(f"/{BOT_TOKEN}", methods=["POST"])
@@ -254,40 +233,41 @@ def webhook():
     if chat_id != ALLOWED_USER_ID:
         return {"ok": True}
 
-    text = msg.get("text")
-    if not text:
+    original_text = msg.get("text")
+
+    if not original_text:
         return {"ok": True}
 
-    update_memory(chat_id, text)
+    update_memory(chat_id, original_text)
+
+    merged_text = merge_messages(chat_id, original_text)
 
     history = list(history_col.find({"chat_id": chat_id})
                    .sort("time",-1).limit(10))
     history.reverse()
 
-    reply = jealousy_trigger(text)
+    # -------- PIPELINE --------
+    reply = handle_short(original_text)
 
     if not reply:
-        reply = real_reaction(chat_id)
+        reply = thinking_engine(merged_text)
 
     if not reply:
-        reply = ai_reply(text, history)
+        reply = ai_reply(merged_text, history)
+
+    reply = control_reply(reply)
 
     if is_repeated(chat_id, reply):
         reply = "hmm kuch aur bolte hain"
 
-    reply = fix_text(reply)
-
-    if len(reply.split()) <= 5:
-        time.sleep(random.uniform(2,4))
-    else:
-        time.sleep(random.uniform(4,7))
-
+    time.sleep(random.uniform(2,5))
     send(chat_id, reply)
 
+    # SAVE ONLY MERGED
     history_col.insert_one({
         "chat_id": chat_id,
         "role": "user",
-        "content": text,
+        "content": merged_text,
         "time": datetime.utcnow()
     })
 
@@ -302,6 +282,6 @@ def webhook():
 
 @app.route("/")
 def home():
-    return "Zayra Ultimate Human v6 Running"
+    return "Zayra v10 True Human AI Running"
 
 threading.Thread(target=auto_loop, daemon=True).start()
