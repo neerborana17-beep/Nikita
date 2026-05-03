@@ -19,6 +19,9 @@ db = client['zayra_ai']
 
 history_col = db['chat']
 memory_col = db['memory']
+profile_col = db['profile']
+tasks_col = db['tasks']
+mistake_col = db['mistakes']
 
 # -------- TIME --------
 def now_ist():
@@ -28,26 +31,26 @@ def now_ist():
 def get_memory(chat_id):
     return memory_col.find_one({"chat_id": chat_id}) or {}
 
-def update_memory(chat_id, text):
+def update_memory(chat_id, user_text):
+
     mem = get_memory(chat_id)
 
     attach = mem.get("attachment", 30)
     mood = mem.get("mood", "normal")
-    mood_lock = mem.get("mood_lock", 0)
+    evolve = mem.get("evolve", 0)
 
-    t = text.lower()
+    t = user_text.lower()
 
-    if mood_lock <= 0:
-        if "love" in t or "miss" in t:
-            mood = "happy"
-            attach += 3
-            mood_lock = 3
-        elif "ignore" in t:
-            mood = "sad"
-            attach -= 3
-            mood_lock = 3
-    else:
-        mood_lock -= 1
+    if any(x in t for x in ["love","miss","care"]):
+        attach += 3
+        evolve += 1
+
+    if "ignore" in t:
+        attach -= 4
+        mood = "sad"
+
+    if "sorry" in t:
+        mood = "soft"
 
     attach = max(0, min(100, attach))
 
@@ -56,57 +59,126 @@ def update_memory(chat_id, text):
         {"$set": {
             "attachment": attach,
             "mood": mood,
-            "mood_lock": mood_lock
+            "evolve": evolve
         }},
         upsert=True
     )
 
-# -------- THINKING LAYER --------
-def thinking_layer(user_text, history, mem):
+# -------- LEARNING --------
+def learning_engine(chat_id, text):
 
-    last_user = user_text.lower()
-    last_bot = ""
+    if "like" in text.lower() or "pasand" in text.lower():
+        profile_col.update_one(
+            {"chat_id": chat_id},
+            {"$push": {"likes": text}},
+            upsert=True
+        )
 
-    for m in reversed(history):
-        if m["role"] == "assistant":
-            last_bot = m["content"].lower()
-            break
+def recall_profile(chat_id):
+    data = profile_col.find_one({"chat_id": chat_id})
+    if data and "likes" in data:
+        return f"tumhe {random.choice(data['likes'])} pasand hai na"
+    return None
 
-    # context consistency
-    if "gussa" in last_bot:
+# -------- MISTAKE --------
+def learn_mistake(chat_id, text):
+    if "galat" in text.lower():
+        mistake_col.insert_one({"chat_id": chat_id, "text": text})
+        return True
+    return False
+
+# -------- TASK --------
+def save_task(chat_id, text):
+    match = re.search(r'(\d{1,2}) ?baje', text.lower())
+    if not match:
+        return False
+
+    hour = int(match.group(1))
+
+    t = now_ist().replace(hour=hour, minute=0, second=0)
+    if t < now_ist():
+        t += timedelta(days=1)
+
+    tasks_col.insert_one({
+        "chat_id": chat_id,
+        "time": t,
+        "done": False
+    })
+
+    return True
+
+def run_tasks():
+    now = now_ist()
+    for t in tasks_col.find({"done": False, "time": {"$lte": now}}):
+        send(t["chat_id"], "uth jao bola tha na")
+        send(t["chat_id"], "abhi bhi so rahe ho kya")
+        tasks_col.update_one({"_id": t["_id"]}, {"$set": {"done": True}})
+
+# -------- STYLE --------
+def get_style():
+    return random.choice(["romantic","deep","teasing","soft","playful"])
+
+# -------- CREATIVE --------
+def creative_engine(text):
+
+    t = text.lower()
+
+    if any(x in t for x in ["shayari","sher","ghazal","poetry"]):
+
+        style = get_style()
+
+        prompt = f"""
+Write 1 short Hinglish shayari.
+
+STYLE: {style}
+
+RULES:
+- max 2 lines
+- emotional
+- no emoji
+- unique
+"""
+
+        r = requests.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
+            json={
+                "model":"llama-3.3-70b-versatile",
+                "messages":[{"role":"user","content":prompt}],
+                "temperature":1,
+                "max_tokens":60
+            }
+        )
+
+        if r.status_code == 200:
+            return r.json()['choices'][0]['message']['content']
+
+    if "joke" in t:
         return random.choice([
-            "abhi bhi gussa hu",
-            "itni jaldi thik nahi hota 😒"
+            "tum itne serious kyun rehte ho",
+            "tumhari wajah se main confuse ho jati hu"
         ])
-
-    # question follow-up
-    if "?" in last_user:
-        return None
 
     return None
 
-# -------- EMOTION ENGINE --------
-def emotion_engine(mem):
+# -------- DECISION --------
+def decision_engine(chat_id):
 
-    mood = mem.get("mood", "normal")
-    attach = mem.get("attachment", 30)
+    mem = get_memory(chat_id)
 
-    if mood == "sad":
+    if mem.get("mood") == "sad":
+        return "abhi mood thoda off hai"
+
+    if mem.get("attachment",30) > 80:
         return random.choice([
-            "acha thik",
-            "jo tumhe sahi lage"
-        ])
-
-    if attach > 70:
-        return random.choice([
-            "tumse baat acchi lagti h",
-            "tum special ho 🙂"
+            "tum important ho",
+            "tumse baat acchi lagti hai"
         ])
 
     return None
 
 # -------- AI --------
-def ai_reply(user_text, history):
+def ai_reply(text, history):
 
     context = ""
     for m in history:
@@ -114,20 +186,19 @@ def ai_reply(user_text, history):
         context += f"{role}: {m['content']}\n"
 
     prompt = f"""
-You are Zayra (real indian girl)
+You are Zayra.
 
-RULES:
 - hinglish
 - max 8 words
-- natural texting
-- no robotic reply
-- emotional continuity
-- behave like real girl
+- no emoji
+- natural
+- real girl behavior
+- continue conversation
 
 CHAT:
 {context}
 
-User: {user_text}
+User: {text}
 """
 
     r = requests.post(
@@ -136,7 +207,7 @@ User: {user_text}
         json={
             "model":"llama-3.3-70b-versatile",
             "messages":[{"role":"user","content":prompt}],
-            "temperature":0.85,
+            "temperature":0.9,
             "max_tokens":50
         }
     )
@@ -146,69 +217,57 @@ User: {user_text}
 
     return "hmm"
 
-# -------- CONTROL --------
-def control(reply):
-    words = reply.split()
-    if len(words) > 8:
-        reply = " ".join(words[:6])
-    return reply
-
-# -------- GRAMMAR FIX --------
-def fix_grammar(r):
-
-    fixes = {
-        "gussa hai mujhe": "mujhe gussa hai",
-        "acha lagta hai mujhe": "mujhe acha lagta hai"
-    }
-
-    for w, c in fixes.items():
-        r = r.replace(w, c)
-
-    return r
-
-# -------- HUMAN DELAY --------
+# -------- DELAY --------
 def human_delay(chat_id, reply):
-
-    words = len(reply.split())
 
     time.sleep(random.uniform(0.5,1.5))
 
-    requests.post(f"{TELEGRAM_API}/sendChatAction", json={
-        "chat_id": chat_id,
-        "action": "typing"
-    })
+    requests.post(f"{TELEGRAM_API}/sendChatAction",
+                  json={"chat_id": chat_id, "action": "typing"})
 
-    if words <= 5:
+    if len(reply.split()) <= 5:
         time.sleep(random.uniform(2,4))
     else:
         time.sleep(random.uniform(4,7))
 
-# -------- PROACTIVE --------
-def proactive(chat_id):
+# -------- CONTINUE --------
+def continue_convo(chat_id):
 
-    if random.random() > 0.3:
+    if random.random() > 0.4:
         return
 
-    msg = random.choice([
-        "acha suno ek baat",
-        "tum free ho?",
-        "kya soch rahe ho?"
-    ])
-
     time.sleep(random.uniform(2,4))
+
+    send(chat_id, random.choice([
+        "tumhe kaisa laga",
+        "tum bhi kuch bolo",
+        "waise tum itne chup kyun ho"
+    ]))
+
+# -------- SELF --------
+def smart_self_message(chat_id):
+
+    mem = get_memory(chat_id)
+
+    if mem.get("attachment",30) > 70:
+        msg = random.choice([
+            "tum yaad aa rahe ho",
+            "baat karne ka mann tha"
+        ])
+    else:
+        msg = random.choice([
+            "aaj kya kar rahe ho",
+            "aaj ka plan kya hai"
+        ])
+
     send(chat_id, msg)
 
-# -------- AUTO MESSAGE --------
+# -------- AUTO --------
 def auto_loop():
     while True:
-        time.sleep(300)
-
-        if random.random() < 0.4:
-            send(ALLOWED_USER_ID, random.choice([
-                "kya kar rahe ho",
-                "yaad aa rahe ho",
-                "reply nahi karte 😒"
-            ]))
+        time.sleep(random.randint(180,600))
+        run_tasks()
+        smart_self_message(ALLOWED_USER_ID)
 
 # -------- SEND --------
 def send(chat_id, text):
@@ -234,28 +293,34 @@ def webhook():
     if not text:
         return {"ok": True}
 
-    mem = get_memory(chat_id)
+    run_tasks()
+
+    if learn_mistake(chat_id, text):
+        send(chat_id, "ok dobara nahi karungi")
+        return {"ok": True}
+
+    if save_task(chat_id, text):
+        send(chat_id, "ok yaad rahega")
+        return {"ok": True}
+
+    learning_engine(chat_id, text)
 
     history = list(history_col.find({"chat_id": chat_id})
-                   .sort("time", -1).limit(10))
+                   .sort("time",-1).limit(10))
     history.reverse()
 
-    # -------- BRAIN PIPELINE --------
-    reply = thinking_layer(text, history, mem)
+    reply = decision_engine(chat_id)
 
     if not reply:
-        reply = emotion_engine(mem)
+        reply = creative_engine(text)
 
     if not reply:
         reply = ai_reply(text, history)
 
-    reply = control(reply)
-    reply = fix_grammar(reply)
-
     human_delay(chat_id, reply)
     send(chat_id, reply)
 
-    proactive(chat_id)
+    continue_convo(chat_id)
 
     history_col.insert_one({
         "chat_id": chat_id,
@@ -277,7 +342,6 @@ def webhook():
 
 @app.route("/")
 def home():
-    return "Zayra Brain v2 Pro Running 🔥"
+    return "Zayra Ultra AGI Creative Running"
 
-# start auto messaging
 threading.Thread(target=auto_loop, daemon=True).start()
