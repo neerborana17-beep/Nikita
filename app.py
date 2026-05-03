@@ -19,163 +19,106 @@ db = client['zayra_ai']
 
 history_col = db['chat']
 memory_col = db['memory']
-profile_col = db['profile']
 tasks_col = db['tasks']
-mistake_col = db['mistakes']
 
 # -------- TIME --------
 def now_ist():
     return datetime.now(pytz.timezone("Asia/Kolkata"))
 
+def is_sleep_time():
+    hour = now_ist().hour
+    return 0 <= hour <= 5
+
 # -------- MEMORY --------
 def get_memory(chat_id):
     return memory_col.find_one({"chat_id": chat_id}) or {}
 
-def update_memory(chat_id, user_text):
+def update_memory(chat_id, text):
 
     mem = get_memory(chat_id)
 
     attach = mem.get("attachment", 30)
     mood = mem.get("mood", "normal")
-    evolve = mem.get("evolve", 0)
 
-    t = user_text.lower()
+    t = text.lower()
 
     if any(x in t for x in ["love","miss","care"]):
         attach += 3
-        evolve += 1
 
     if "ignore" in t:
-        attach -= 4
+        attach -= 5
         mood = "sad"
 
     if "sorry" in t:
         mood = "soft"
 
-    attach = max(0, min(100, attach))
+    # mood swings
+    if random.random() < 0.1:
+        mood = random.choice(["happy","sad","normal","attitude","jealous"])
 
     memory_col.update_one(
         {"chat_id": chat_id},
         {"$set": {
-            "attachment": attach,
+            "attachment": max(0,min(100,attach)),
             "mood": mood,
-            "evolve": evolve
+            "last_seen": datetime.utcnow()
         }},
         upsert=True
     )
 
-# -------- LEARNING --------
-def learning_engine(chat_id, text):
-
-    if "like" in text.lower() or "pasand" in text.lower():
-        profile_col.update_one(
-            {"chat_id": chat_id},
-            {"$push": {"likes": text}},
-            upsert=True
-        )
-
-def recall_profile(chat_id):
-    data = profile_col.find_one({"chat_id": chat_id})
-    if data and "likes" in data:
-        return f"tumhe {random.choice(data['likes'])} pasand hai na"
-    return None
-
-# -------- MISTAKE --------
-def learn_mistake(chat_id, text):
-    if "galat" in text.lower():
-        mistake_col.insert_one({"chat_id": chat_id, "text": text})
-        return True
-    return False
-
-# -------- TASK --------
-def save_task(chat_id, text):
-    match = re.search(r'(\d{1,2}) ?baje', text.lower())
-    if not match:
+# -------- ANTI REPEAT --------
+def is_repeated(chat_id, reply):
+    last = history_col.find_one(
+        {"chat_id": chat_id, "role": "assistant"},
+        sort=[("time",-1)]
+    )
+    if not last:
         return False
+    return last["content"].lower() == reply.lower()
 
-    hour = int(match.group(1))
+# -------- GRAMMAR FIX --------
+def fix_text(text):
+    fixes = {
+        "dekhi rhi hu": "dekh rhi hu",
+        "mai hu": "main hu"
+    }
+    for k,v in fixes.items():
+        text = text.replace(k, v)
+    return text
 
-    t = now_ist().replace(hour=hour, minute=0, second=0)
-    if t < now_ist():
-        t += timedelta(days=1)
-
-    tasks_col.insert_one({
-        "chat_id": chat_id,
-        "time": t,
-        "done": False
-    })
-
-    return True
-
-def run_tasks():
-    now = now_ist()
-    for t in tasks_col.find({"done": False, "time": {"$lte": now}}):
-        send(t["chat_id"], "uth jao bola tha na")
-        send(t["chat_id"], "abhi bhi so rahe ho kya")
-        tasks_col.update_one({"_id": t["_id"]}, {"$set": {"done": True}})
-
-# -------- STYLE --------
-def get_style():
-    return random.choice(["romantic","deep","teasing","soft","playful"])
-
-# -------- CREATIVE --------
-def creative_engine(text):
-
-    t = text.lower()
-
-    if any(x in t for x in ["shayari","sher","ghazal","poetry"]):
-
-        style = get_style()
-
-        prompt = f"""
-Write 1 short Hinglish shayari.
-
-STYLE: {style}
-
-RULES:
-- max 2 lines
-- emotional
-- no emoji
-- unique
-"""
-
-        r = requests.post(
-            "https://api.groq.com/openai/v1/chat/completions",
-            headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
-            json={
-                "model":"llama-3.3-70b-versatile",
-                "messages":[{"role":"user","content":prompt}],
-                "temperature":1,
-                "max_tokens":60
-            }
-        )
-
-        if r.status_code == 200:
-            return r.json()['choices'][0]['message']['content']
-
-    if "joke" in t:
+# -------- JEALOUSY --------
+def jealousy_trigger(text):
+    if any(x in text.lower() for x in ["ladki","girl","dusri"]):
         return random.choice([
-            "tum itne serious kyun rehte ho",
-            "tumhari wajah se main confuse ho jati hu"
+            "acha kisi aur se baat ho rahi hai",
+            "nice mujhe bhool gaye",
+            "acha ab time nahi hai mere liye"
         ])
-
     return None
 
-# -------- DECISION --------
-def decision_engine(chat_id):
-
+# -------- REAL REACTION --------
+def real_reaction(chat_id):
     mem = get_memory(chat_id)
+    last = mem.get("last_seen")
 
-    if mem.get("mood") == "sad":
-        return "abhi mood thoda off hai"
+    if not last:
+        return None
 
-    if mem.get("attachment",30) > 80:
+    diff = (datetime.utcnow() - last).total_seconds()
+
+    if diff < 60:
+        return None
+
+    if diff < 180:
         return random.choice([
-            "tum important ho",
-            "tumse baat acchi lagti hai"
+            "reply dene me time lagta hai kya",
+            "busy ho kya"
         ])
 
-    return None
+    return random.choice([
+        "rehne do baat nahi karni",
+        "jab mann ho tab baat karna"
+    ])
 
 # -------- AI --------
 def ai_reply(text, history):
@@ -185,15 +128,20 @@ def ai_reply(text, history):
         role = "User" if m["role"]=="user" else "Zayra"
         context += f"{role}: {m['content']}\n"
 
+    tone = "normal"
+    if is_sleep_time():
+        tone = "sleepy"
+
     prompt = f"""
 You are Zayra.
 
 - hinglish
 - max 8 words
 - no emoji
-- natural
+- consistent personality
 - real girl behavior
-- continue conversation
+- no repetition
+- tone: {tone}
 
 CHAT:
 {context}
@@ -217,56 +165,73 @@ User: {text}
 
     return "hmm"
 
-# -------- DELAY --------
-def human_delay(chat_id, reply):
+# -------- SELF MESSAGE GENERATOR --------
+def generate_self_message(mem):
 
-    time.sleep(random.uniform(0.5,1.5))
+    mood = mem.get("mood","normal")
 
-    requests.post(f"{TELEGRAM_API}/sendChatAction",
-                  json={"chat_id": chat_id, "action": "typing"})
+    base = [
+        "kya kar rahe ho",
+        "kaise ho",
+        "khana khaya kya",
+        "busy ho kya",
+        "arey mujhe bhi yaad kar lo"
+    ]
 
-    if len(reply.split()) <= 5:
-        time.sleep(random.uniform(2,4))
-    else:
-        time.sleep(random.uniform(4,7))
+    line = random.choice(base)
 
-# -------- CONTINUE --------
-def continue_convo(chat_id):
+    if mood == "sad":
+        line = "aaj mood thoda off hai"
 
-    if random.random() > 0.4:
-        return
+    elif mood == "jealous":
+        line = "lagta hai kisi aur se baat ho rahi hai"
 
-    time.sleep(random.uniform(2,4))
+    variations = [
+        line,
+        "waise " + line,
+        line + " batao na",
+        line + " ya busy ho"
+    ]
 
-    send(chat_id, random.choice([
-        "tumhe kaisa laga",
-        "tum bhi kuch bolo",
-        "waise tum itne chup kyun ho"
-    ]))
+    return random.choice(variations)
 
-# -------- SELF --------
+# -------- SELF MESSAGE --------
 def smart_self_message(chat_id):
 
-    mem = get_memory(chat_id)
+    if is_sleep_time():
+        return
 
-    if mem.get("attachment",30) > 70:
-        msg = random.choice([
-            "tum yaad aa rahe ho",
-            "baat karne ka mann tha"
-        ])
-    else:
-        msg = random.choice([
-            "aaj kya kar rahe ho",
-            "aaj ka plan kya hai"
-        ])
+    mem = get_memory(chat_id)
+    now = datetime.utcnow()
+
+    last_self = mem.get("last_self")
+    last_seen = mem.get("last_seen")
+
+    if last_seen and (now - last_seen).total_seconds() < 900:
+        return
+
+    gap = random.randint(3600,28800)
+
+    if last_self and (now - last_self).total_seconds() < gap:
+        return
+
+    if random.random() < 0.5:
+        return
+
+    msg = generate_self_message(mem)
 
     send(chat_id, msg)
 
-# -------- AUTO --------
+    memory_col.update_one(
+        {"chat_id": chat_id},
+        {"$set": {"last_self": now}},
+        upsert=True
+    )
+
+# -------- AUTO LOOP --------
 def auto_loop():
     while True:
-        time.sleep(random.randint(180,600))
-        run_tasks()
+        time.sleep(random.randint(600,1800))
         smart_self_message(ALLOWED_USER_ID)
 
 # -------- SEND --------
@@ -293,34 +258,31 @@ def webhook():
     if not text:
         return {"ok": True}
 
-    run_tasks()
-
-    if learn_mistake(chat_id, text):
-        send(chat_id, "ok dobara nahi karungi")
-        return {"ok": True}
-
-    if save_task(chat_id, text):
-        send(chat_id, "ok yaad rahega")
-        return {"ok": True}
-
-    learning_engine(chat_id, text)
+    update_memory(chat_id, text)
 
     history = list(history_col.find({"chat_id": chat_id})
                    .sort("time",-1).limit(10))
     history.reverse()
 
-    reply = decision_engine(chat_id)
+    reply = jealousy_trigger(text)
 
     if not reply:
-        reply = creative_engine(text)
+        reply = real_reaction(chat_id)
 
     if not reply:
         reply = ai_reply(text, history)
 
-    human_delay(chat_id, reply)
-    send(chat_id, reply)
+    if is_repeated(chat_id, reply):
+        reply = "hmm kuch aur bolte hain"
 
-    continue_convo(chat_id)
+    reply = fix_text(reply)
+
+    if len(reply.split()) <= 5:
+        time.sleep(random.uniform(2,4))
+    else:
+        time.sleep(random.uniform(4,7))
+
+    send(chat_id, reply)
 
     history_col.insert_one({
         "chat_id": chat_id,
@@ -336,12 +298,10 @@ def webhook():
         "time": datetime.utcnow()
     })
 
-    update_memory(chat_id, text)
-
     return {"ok": True}
 
 @app.route("/")
 def home():
-    return "Zayra Ultra AGI Creative Running"
+    return "Zayra Ultimate Human v6 Running"
 
 threading.Thread(target=auto_loop, daemon=True).start()
