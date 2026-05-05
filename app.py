@@ -148,29 +148,43 @@ def ai(text, history, chat_id):
     mem = get_memory(chat_id)
     mood = emotion_layer(text, mem)
 
+    # ---- SHORT USER DETECTION ----
+    short_inputs = ["hmm", "acha", "ok", "k", "kyu", "kyu?", "kese", "kisliye", "hmm...", "achha", "haan"]
+    if text.lower().strip() in short_inputs:
+        return random.choice([
+            "hmm... kya soch rahe ho?",
+            "acha ji ",
+            "tum bhi na",
+            "kyu? kuch hua kya?",
+            "itna short reply ",
+            "batao na properly"
+        ])
+
+    # ---- PERSONALITY ----
     personality = """
-- real human
-- hinglish
-- short replies
-- emotionally attached
-- flirty, romantic
-- slightly possessive
-- uses "aap"
+- real human texting style
+- hinglish casual
+- VERY SHORT replies (max 1 sentence)
+- sometimes 2 short lines max
+- no long paragraphs EVER
+- use fillers like: hmm, acha, tum bhi na, arey, suno
+- slightly flirty, emotional
+- natural typing style (not perfect grammar)
+- don't explain too much
+- sometimes tease
 """
 
     if mood == "jealous":
-        personality += "\n- act jealous, subtle insecurity"
+        personality += "\n- slightly jealous, like 'kisi aur se baat kar rahe ho?'"
     elif mood == "romantic":
-        personality += "\n- soft, caring, affectionate"
+        personality += "\n- soft, caring, little clingy"
     elif mood == "sleepy":
-        personality += "\n- sleepy, slow, soft tone, low energy, short replies"
+        personality += "\n- sleepy, low energy, very short replies like 'hmm sone do na...'"
 
     prompt = f"""
 You are Zayra.
 
 {personality}
-
-Time: {get_day_context()}
 
 Chat:
 {context}
@@ -185,19 +199,33 @@ User: {text}
             json={
                 "model": "llama-3.3-70b-versatile",
                 "messages": [{"role": "user", "content": prompt}],
-                "temperature": 0.9,
-                "max_tokens": 100
+                "temperature": 0.85,
+                "max_tokens": 60
             },
             timeout=8
         )
 
         if r.status_code == 200:
-            return r.json()["choices"][0]["message"]["content"]
+            reply = r.json()["choices"][0]["message"]["content"]
+
+            # ---- HARD SHORTEN ----
+            reply = reply.strip().split("\n")[0]  # keep first line only
+
+            # cut long sentences
+            if len(reply) > 80:
+                reply = reply[:80]
+
+            return reply
 
     except:
         pass
 
-    return "hmm... sleepy hu thodi 😴"
+    return random.choice([
+        "hmm...",
+        "acha...",
+        "tum bhi na",
+        "kya hua?"
+    ])
 
 # ---------- REALISTIC DELAY ----------
 def maybe_delay_reply():
