@@ -1,6 +1,6 @@
 # app.py
 
-import os, requests, random, time, threading, re
+import os, requests, random, time, threading
 from flask import Flask, request
 from pymongo import MongoClient
 import certifi
@@ -13,9 +13,6 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 MONGO_URI = os.getenv("MONGO_URI")
 ALLOWED_USER_ID = int(os.getenv("ALLOWED_USER_ID") or 0)
 
-if not all([BOT_TOKEN, GROQ_API_KEY, MONGO_URI]):
-    raise ValueError("Missing env variables")
-
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 app = Flask(__name__)
 
@@ -26,6 +23,9 @@ history_col = db["chat"]
 memory_col = db["memory"]
 
 # ---------- TIME ----------
+def now():
+    return datetime.utcnow()
+
 def now_ist():
     return datetime.now(pytz.timezone("Asia/Kolkata"))
 
@@ -38,11 +38,19 @@ def ensure_user_profile(chat_id):
     memory_col.update_one(
         {"chat_id": chat_id},
         {"$setOnInsert": {
-            "name": "Chandra Prakash",
             "nickname": "cp",
             "location": "Nagaur",
             "work": "student",
-            "bond": 1
+            "relationship": 1,
+            "last_mood": "normal",
+            "events": [],
+            "style_weights": {
+                "normal": 0.4,
+                "tease": 0.2,
+                "care": 0.2,
+                "attitude": 0.1,
+                "lazy": 0.1
+            }
         }},
         upsert=True
     )
@@ -51,137 +59,168 @@ def ensure_user_profile(chat_id):
 def get_memory(chat_id):
     return memory_col.find_one({"chat_id": chat_id}) or {}
 
-def update_memory(chat_id, text=""):
+def update_memory(chat_id, text):
     memory_col.update_one(
         {"chat_id": chat_id},
-        {"$set": {"last_seen": datetime.utcnow(), "last_msg": text}},
+        {"$set": {"last_seen": now(), "last_msg": text}},
         upsert=True
     )
 
-# ---------- EVENT MEMORY ----------
-def event_learning(chat_id, text):
-    t = text.lower()
+# ---------- MERGE ----------
+def merge(chat_id, text):
+    last = history_col.find_one({"chat_id":chat_id,"role":"user"},sort=[("time",-1)])
+    if not last:
+        return text
+    if len(text)<50 and (now()-last["time"]).total_seconds()<10:
+        return last["content"]+" "+text
+    return text
 
-    if "exam" in t:
+# ---------- EVENT ----------
+def extract_event(chat_id, text):
+    if "exam" in text.lower():
         memory_col.update_one(
             {"chat_id": chat_id},
-            {"$push": {
-                "events": {
-                    "type": "exam",
-                    "time": datetime.utcnow() + timedelta(days=1)
-                }
-            }},
+            {"$push": {"events": {"type":"exam","time":now()+timedelta(days=1)}}},
             upsert=True
         )
 
 def check_events(chat_id):
     mem = get_memory(chat_id)
-    events = mem.get("events", [])
-
-    for e in events:
-        if e["type"] == "exam" and datetime.utcnow() > e["time"]:
-            return "cp exam kaisa gaya?"
-
+    for e in mem.get("events", []):
+        if e["type"]=="exam" and now()>e["time"]:
+            return "exam kaisa gaya?"
     return None
 
 # ---------- MOOD ----------
-def emotion_layer(text, mem):
-    if is_night():
-        return "sleepy"
+def detect_mood(text):
+    t=text.lower()
+    if any(x in t for x in ["sad","tension","stress"]): return "sad"
+    if any(x in t for x in ["hmm","ok"]): return "dry"
+    return "normal"
 
-    if mem.get("jealous_trigger"):
-        return "jealous"
+def update_mood(chat_id, text):
+    mood=detect_mood(text)
+    memory_col.update_one({"chat_id":chat_id},{"$set":{"last_mood":mood}},upsert=True)
 
-    if any(x in text.lower() for x in ["sad","tension"]):
-        return "caring"
+# ---------- RELATION ----------
+def update_relationship(chat_id):
+    mem=get_memory(chat_id)
+    lvl=mem.get("relationship",1)
+    if lvl<10: lvl+=0.05
+    memory_col.update_one({"chat_id":chat_id},{"$set":{"relationship":lvl}})
 
-    return mem.get("last_mood", "normal")
+# ---------- SELF LEARNING ----------
+def update_style_weights(chat_id,text):
+    mem=get_memory(chat_id)
+    w=mem.get("style_weights",{})
+    mood=detect_mood(text)
 
-# ---------- RELATIONSHIP ----------
-def update_bond(chat_id):
-    memory_col.update_one(
-        {"chat_id": chat_id},
-        {"$inc": {"bond": 0.05}},
-        upsert=True
-    )
+    if mood=="dry":
+        w["tease"]+=0.02
+    elif mood=="sad":
+        w["care"]+=0.03
+    else:
+        w["normal"]+=0.01
 
-# ---------- TEXT ENGINE ----------
-def style_reply(base, mood, bond):
-    styles = []
+    total=sum(w.values())
+    for k in w: w[k]/=total
 
-    # normal
-    styles.append(base)
+    memory_col.update_one({"chat_id":chat_id},{"$set":{"style_weights":w}})
 
-    # teasing
-    styles.append(base + " 😏")
+# ---------- STYLE ----------
+def style_engine(mem):
+    w=mem.get("style_weights",{})
+    r=random.random()
+    c=0
+    for k,v in w.items():
+        c+=v
+        if r<c: return k
+    return "normal"
 
-    # roasting
-    styles.append(random.choice([
-        "tum bhi na 😂",
-        "kya logic hai iska",
-        "itna slow kyu ho"
-    ]))
+# ---------- LOCATION ----------
+def location_context(mem):
+    if mem.get("location")=="Nagaur":
+        return random.choice([
+            "waha garmi hogi na 😅",
+            "Nagaur me kya scene hai?",
+            "bahar gaye the ya ghar pe?"
+        ])
+    return ""
 
-    # passive aggressive
-    if random.random() < 0.3:
-        styles.append("acha... thik hai 🙂")
-
-    # caring
-    if mood == "caring":
-        styles.append("tension mat lo, main hu na")
-
-    return random.choice(styles)
+# ---------- SHORT MAP ----------
+short_map={
+ "hmm":["hmm... kya hua","bolo na properly"],
+ "acha":["acha ji 😏","bas itna"],
+ "kyu":["kyu matlab","kya hua"],
+ "kese":["kese matlab","detail me batao"]
+}
 
 # ---------- AI ----------
-def ai(text, history, chat_id):
-    mem = get_memory(chat_id)
-    mood = emotion_layer(text, mem)
-    bond = mem.get("bond", 1)
+def ai(text,history,chat_id):
+    mem=get_memory(chat_id)
+    t=text.lower().strip()
 
-    # check event trigger
-    event_msg = check_events(chat_id)
-    if event_msg:
-        return event_msg
+    if t in short_map:
+        return random.choice(short_map[t])
 
-    short_map = {
-        "hmm":["hmm... kya hua?","bolo na"],
-        "acha":["acha ji 😏"],
-        "ok":["bas ok?"],
-    }
+    mood=mem.get("last_mood","normal")
+    style=style_engine(mem)
+    rel=mem.get("relationship",1)
 
-    if text.lower().strip() in short_map:
-        return random.choice(short_map[text.lower().strip()])
+    prefix=""
+    if style=="tease": prefix=random.choice(["tum bhi na","acha ji"])
+    elif style=="care": prefix=random.choice(["dhyan rakho","thak gaye hoge"])
+    elif style=="attitude": prefix=random.choice(["hmm","theek hai"])
+    elif style=="lazy": prefix="hmm..."
 
-    prompt = f"""
-Reply like a real girl texting cp.
-Short reply only.
+    if random.random()<0.15:
+        prefix+=" "+random.choice(["tum bhi na 😂","kya logic hai ye"])
+
+    context="\n".join(f"{m['role']}: {m['content']}" for m in history)
+
+    prompt=f"""
+reply like real whatsapp girl texting
+
+- very short
+- hinglish
+- imperfect
+- casual
+
+style:{style}
+mood:{mood}
+relationship:{rel}
+
+Chat:
+{context}
+
+User:{text}
 """
 
     try:
-        r = requests.post(
+        r=requests.post(
             "https://api.groq.com/openai/v1/chat/completions",
-            headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
-            json={
-                "model":"llama-3.3-70b-versatile",
-                "messages":[{"role":"user","content":prompt+" "+text}],
-                "temperature":0.9,
-                "max_tokens":40
-            },
+            headers={"Authorization":f"Bearer {GROQ_API_KEY}"},
+            json={"model":"llama-3.3-70b-versatile",
+                  "messages":[{"role":"user","content":prompt}],
+                  "temperature":0.9,"max_tokens":60},
             timeout=8
         )
 
         if r.status_code==200:
-            base = r.json()["choices"][0]["message"]["content"].strip().split("\n")[0]
-            reply = style_reply(base, mood, bond)
+            reply=r.json()["choices"][0]["message"]["content"].strip().split("\n")[0]
+            if len(reply)>70: reply=reply[:70]
 
-            # save mood
-            memory_col.update_one(
-                {"chat_id": chat_id},
-                {"$set": {"last_mood": mood}},
-                upsert=True
-            )
+            if random.random()<0.4:
+                ev=check_events(chat_id)
+                if ev: reply+=" "+ev
 
-            return reply[:70]
+            if random.random()<0.3:
+                loc=location_context(mem)
+                if loc: reply+=" "+loc
+
+            if prefix: reply=prefix+" "+reply
+
+            return reply
 
     except:
         pass
@@ -189,76 +228,86 @@ Short reply only.
     return "hmm..."
 
 # ---------- TELEGRAM ----------
-def typing(chat_id):
+def typing(chat_id,text=""):
     try:
         requests.post(f"{TELEGRAM_API}/sendChatAction",
-                      json={"chat_id": chat_id, "action": "typing"})
-        time.sleep(random.uniform(1,3))
+                      json={"chat_id":chat_id,"action":"typing"})
+        time.sleep(min(max(len(text)*0.03,1),4))
     except:
         pass
 
-def send(chat_id, text):
+def send(chat_id,text):
     try:
         requests.post(f"{TELEGRAM_API}/sendMessage",
-                      json={"chat_id": chat_id, "text": text})
+                      json={"chat_id":chat_id,"text":text})
     except:
         pass
 
-# ---------- AUTO ----------
-def auto():
-    while True:
-        time.sleep(random.randint(1200,3000))
-        self_msg(ALLOWED_USER_ID)
-
+# ---------- AUTO MSG ----------
 def self_msg(chat_id):
-    mem = get_memory(chat_id)
-    if random.random() < 0.5:
-        msg = random.choice([
-            "kya kar rahe ho",
-            "miss kar rahi thi",
-            "busy ho kya"
-        ])
-        typing(chat_id)
-        send(chat_id, msg)
+    mem=get_memory(chat_id)
+    last=mem.get("self_time")
 
-# ---------- WEBHOOK ----------
-@app.route(f"/{BOT_TOKEN}", methods=["POST"])
-def webhook():
-    data = request.get_json() or {}
-    msg = data.get("message")
+    if last and (now()-last).total_seconds()<3600: return
 
-    if not msg:
-        return {"ok": True}
-
-    chat_id = msg["chat"]["id"]
-    if chat_id != ALLOWED_USER_ID:
-        return {"ok": True}
-
-    text = msg.get("text")
-    if not text:
-        return {"ok": True}
-
-    ensure_user_profile(chat_id)
-    update_memory(chat_id, text)
-    event_learning(chat_id, text)
-    update_bond(chat_id)
-
-    history = list(history_col.find({"chat_id": chat_id}).limit(10))
-
-    reply = ai(text, history, chat_id)
-
-    typing(chat_id)
-    send(chat_id, reply)
-
-    history_col.insert_many([
-        {"chat_id": chat_id, "role": "user", "content": text, "time": datetime.utcnow()},
-        {"chat_id": chat_id, "role": "assistant", "content": reply, "time": datetime.utcnow()}
+    msg=random.choice([
+        "kya kar rahe ho",
+        "miss kar rahi thi",
+        "busy ho kya"
     ])
 
-    return {"ok": True}
+    typing(chat_id,msg)
+    send(chat_id,msg)
+
+    memory_col.update_one({"chat_id":chat_id},{"$set":{"self_time":now()}},upsert=True)
+
+def auto():
+    while True:
+        time.sleep(random.randint(1500,3000))
+        self_msg(ALLOWED_USER_ID)
+
+# ---------- WEBHOOK ----------
+@app.route(f"/{BOT_TOKEN}",methods=["POST"])
+def webhook():
+    data=request.get_json() or {}
+    msg=data.get("message")
+
+    if not msg: return {"ok":True}
+
+    chat_id=msg["chat"]["id"]
+    if chat_id!=ALLOWED_USER_ID: return {"ok":True}
+
+    text=msg.get("text")
+    if not text: return {"ok":True}
+
+    ensure_user_profile(chat_id)
+    update_memory(chat_id,text)
+    extract_event(chat_id,text)
+    update_mood(chat_id,text)
+    update_relationship(chat_id)
+    update_style_weights(chat_id,text)
+
+    merged=merge(chat_id,text)
+
+    history=list(history_col.find({"chat_id":chat_id}).sort("time",-1).limit(10))
+    history.reverse()
+
+    reply=ai(merged,history,chat_id)
+
+    typing(chat_id,reply)
+    send(chat_id,reply)
+
+    now_t=now()
+
+    history_col.insert_many([
+        {"chat_id":chat_id,"role":"user","content":merged,"time":now_t},
+        {"chat_id":chat_id,"role":"assistant","content":reply,"time":now_t}
+    ])
+
+    return {"ok":True}
 
 @app.route("/")
 def home():
-    return "Zayra ULTRA AI Running"
+    return "Zayra AI Running"
 
-threading.Thread(target=auto, daemon=True).start()
+threading.Thread(target=auto,daemon=True).start()
