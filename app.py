@@ -147,39 +147,82 @@ def ai(text, history, chat_id):
 
     mem = get_memory(chat_id)
     mood = emotion_layer(text, mem)
+    t = text.lower().strip()
 
-    # ---- SHORT USER DETECTION ----
-    short_inputs = ["hmm", "acha", "ok", "k", "kyu", "kyu?", "kese", "kisliye", "hmm...", "achha", "haan"]
-    if text.lower().strip() in short_inputs:
-        return random.choice([
-            "hmm... kya soch rahe ho?",
-            "acha ji ",
-            "tum bhi na",
-            "kyu? kuch hua kya?",
-            "itna short reply ",
-            "batao na properly"
-        ])
+    # ---------- SHORT REPLY UNDERSTANDING ----------
+    short_map = {
+        "hmm": [
+            "hmm... kya hua?",
+            "itna soch kyu rahe ho",
+            "bolo na properly"
+        ],
+        "acha": [
+            "acha ji",
+            "hmm",
+            "itna dry reply"
+        ],
+        "achha": [
+            "achha ji ",
+            "bas itna hi",
+        ],
+        "kiu": [
+            "matlab?",
+            "kiu kiya hua",
+            "aise hi puch rahe ho ya reason hai"
+        ],
+        "kiya": [
+            "kiya matlab?",
+            "kiya hua?"
+        ],
+        "kese": [
+            "kese matlab?",
+            "detail me batao na"
+        ],
+        "kaise": [
+            "kaise matlab?",
+        ],
+        "kis liye": [
+            "kis liye",
+            "reason batao pehle"
+        ],
+        "ok": [
+            "bas ok?",
+            "itna rude kyu ho "
+        ],
+        "hmm...": [
+            "ab ye hmm kya hai",
+        ],
+        "tum bhi na": [
+            "haan main hi na",
+            "aap bhi na"
+        ]
+    }
 
-    # ---- PERSONALITY ----
+    for key in short_map:
+        if t == key:
+            return random.choice(short_map[key])
+
+    # ---------- PERSONALITY ----------
     personality = """
-- real human texting style
-- hinglish casual
+- you are a REAL girl chatting
+- NEVER use masculine words for yourself
+- talk like a normal girl texting (not poetic, not dramatic)
 - VERY SHORT replies (max 1 sentence)
-- sometimes 2 short lines max
-- no long paragraphs EVER
-- use fillers like: hmm, acha, tum bhi na, arey, suno
-- slightly flirty, emotional
-- natural typing style (not perfect grammar)
-- don't explain too much
-- sometimes tease
+- sometimes broken texting style
+- use words like: hmm, acha, arey, suno, tum bhi na
+- natural + slightly flirty
+- NO long lines
+- NO deep philosophical talks
+- no "main karta/karti ho" type awkward lines
+- sound real, casual, imperfect
 """
 
     if mood == "jealous":
-        personality += "\n- slightly jealous, like 'kisi aur se baat kar rahe ho?'"
+        personality += "\n- act slightly jealous like 'kisi aur se baat kar rahe ho?'"
     elif mood == "romantic":
-        personality += "\n- soft, caring, little clingy"
+        personality += "\n- soft + thodi clingy"
     elif mood == "sleepy":
-        personality += "\n- sleepy, low energy, very short replies like 'hmm sone do na...'"
+        personality += "\n- sleepy tone like 'hmm sone do na...'"
 
     prompt = f"""
 You are Zayra.
@@ -199,21 +242,31 @@ User: {text}
             json={
                 "model": "llama-3.3-70b-versatile",
                 "messages": [{"role": "user", "content": prompt}],
-                "temperature": 0.85,
-                "max_tokens": 60
+                "temperature": 0.8,
+                "max_tokens": 50
             },
             timeout=8
         )
 
         if r.status_code == 200:
-            reply = r.json()["choices"][0]["message"]["content"]
+            reply = r.json()["choices"][0]["message"]["content"].strip()
 
-            # ---- HARD SHORTEN ----
-            reply = reply.strip().split("\n")[0]  # keep first line only
+            # ---- HARD FILTER ----
+            reply = reply.split("\n")[0]
 
-            # cut long sentences
-            if len(reply) > 80:
-                reply = reply[:80]
+            # remove weird long outputs
+            if len(reply) > 70:
+                reply = reply[:70]
+
+            # remove unwanted formal tone
+            bad_words = ["aap mere liye", "sirf aap", "forever", "main sirf"]
+            if any(b in reply.lower() for b in bad_words):
+                return random.choice([
+                    "tum bhi na 😏",
+                    "acha ji...",
+                    "kya bol rahe ho 😂",
+                    "drama mat karo"
+                ])
 
             return reply
 
@@ -223,8 +276,8 @@ User: {text}
     return random.choice([
         "hmm...",
         "acha...",
-        "tum bhi na",
-        "kya hua?"
+        "kya hua?",
+        "bolo na"
     ])
 
 # ---------- REALISTIC DELAY ----------
