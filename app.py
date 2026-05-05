@@ -1,8 +1,11 @@
+# app.py
+
 import os
 import requests
 import random
 import time
 import threading
+import re
 from flask import Flask, request
 from pymongo import MongoClient
 import certifi
@@ -44,36 +47,37 @@ def is_night():
     h = now_ist().hour
     return h >= 22 or h < 5
 
+# ---------- USER PROFILE ----------
+def ensure_user_profile(chat_id):
+    memory_col.update_one(
+        {"chat_id": chat_id},
+        {"$setOnInsert": {
+            "name": "Chandra Prakash",
+            "nickname": "cp",
+            "location": "Nagaur",
+            "work": "student"
+        }},
+        upsert=True
+    )
+
 # ---------- TELEGRAM ----------
 def human_delay(text, mood="normal"):
     base = len(text) * 0.04
-    mood_mult = {
-        "normal": 1,
-        "romantic": 1.2,
-        "jealous": 1.1,
-        "sleepy": 1.6
-    }.get(mood, 1)
-
+    mood_mult = {"normal": 1, "romantic": 1.2, "jealous": 1.1, "sleepy": 1.6}.get(mood, 1)
     return min(max(base * mood_mult, 1.2), 6)
 
 def typing(chat_id, text="", mood="normal"):
     try:
-        requests.post(
-            f"{TELEGRAM_API}/sendChatAction",
-            json={"chat_id": chat_id, "action": "typing"},
-            timeout=5
-        )
+        requests.post(f"{TELEGRAM_API}/sendChatAction",
+                      json={"chat_id": chat_id, "action": "typing"}, timeout=5)
         time.sleep(human_delay(text, mood))
     except:
         pass
 
 def send(chat_id, text):
     try:
-        requests.post(
-            f"{TELEGRAM_API}/sendMessage",
-            json={"chat_id": chat_id, "text": text},
-            timeout=5
-        )
+        requests.post(f"{TELEGRAM_API}/sendMessage",
+                      json={"chat_id": chat_id, "text": text}, timeout=5)
     except:
         pass
 
@@ -81,12 +85,30 @@ def send(chat_id, text):
 def get_memory(chat_id):
     return memory_col.find_one({"chat_id": chat_id}) or {}
 
-def update_memory(chat_id):
-    memory_col.update_one(
-        {"chat_id": chat_id},
-        {"$set": {"last_seen": datetime.utcnow()}},
-        upsert=True
-    )
+def update_memory(chat_id, text=""):
+    update = {"last_seen": datetime.utcnow()}
+    if text:
+        update["last_msg"] = text
+    memory_col.update_one({"chat_id": chat_id}, {"$set": update}, upsert=True)
+
+def dynamic_learning(chat_id, text):
+    t = text.lower()
+
+    # learn exam
+    if "exam" in t:
+        memory_col.update_one(
+            {"chat_id": chat_id},
+            {"$set": {"exam": True}},
+            upsert=True
+        )
+
+    # learn study habit
+    if "study" in t:
+        memory_col.update_one(
+            {"chat_id": chat_id},
+            {"$set": {"studying": True}},
+            upsert=True
+        )
 
 def update_personality(chat_id, text):
     t = text.lower()
@@ -99,11 +121,7 @@ def update_personality(chat_id, text):
         update["jealous_trigger"] = True
 
     if update:
-        memory_col.update_one(
-            {"chat_id": chat_id},
-            {"$set": update},
-            upsert=True
-        )
+        memory_col.update_one({"chat_id": chat_id}, {"$set": update}, upsert=True)
 
 # ---------- MERGE ----------
 def merge(chat_id, text):
@@ -111,118 +129,76 @@ def merge(chat_id, text):
         {"chat_id": chat_id, "role": "user"},
         sort=[("time", -1)]
     )
-
     if not last:
         return text
 
-    if (
-        len(text) < 50 and
-        (datetime.utcnow() - last["time"]).total_seconds() < 10
-    ):
+    if len(text) < 50 and (datetime.utcnow() - last["time"]).total_seconds() < 10:
         return f"{last['content']} {text}"
 
     return text
 
+# ---------- LOCATION MOOD ----------
+def location_context(mem):
+    if mem.get("location") == "Nagaur":
+        return random.choice([
+            "waha garmi hoti hai na 😅",
+            "Nagaur me aaj mausam kesa hai?",
+            "bahar gaye the ya ghar pe the?"
+        ])
+    return ""
+
+# ---------- SMART QUESTION ----------
+def smart_question(chat_id, text):
+    mem = get_memory(chat_id)
+
+    if mem.get("exam"):
+        return random.choice([
+            "exam ki tayari kaisi chal rahi hai?",
+            "padhai ho rahi hai na cp?"
+        ])
+
+    return random.choice([
+        "aaj din kesa tha?",
+        "kuch khaya aapne?",
+        "thak gaye kya?"
+    ])
+
 # ---------- EMOTION ----------
 def emotion_layer(text, mem):
-    t = text.lower()
-
     if is_night():
         return "sleepy"
-
-    if mem.get("jealous_trigger") or any(x in t for x in ["kisi aur", "dusri"]):
+    if mem.get("jealous_trigger"):
         return "jealous"
-
-    if any(x in t for x in ["miss", "yaad", "love"]):
-        return "romantic"
-
     return "normal"
 
 # ---------- AI ----------
 def ai(text, history, chat_id):
+    mem = get_memory(chat_id)
+    mood = emotion_layer(text, mem)
+
+    profile = {
+        "name": mem.get("name", "Chandra Prakash"),
+        "nickname": mem.get("nickname", "cp"),
+        "location": mem.get("location", "Nagaur"),
+        "work": mem.get("work", "student")
+    }
+
     context = "\n".join(
         f"{'User' if m['role']=='user' else 'Zayra'}: {m['content']}"
         for m in history
     )
 
-    mem = get_memory(chat_id)
-    mood = emotion_layer(text, mem)
-    t = text.lower().strip()
-
-    # ---------- SHORT REPLY UNDERSTANDING ----------
-    short_map = {
-        "hmm": [
-            "hmm... kya hua?",
-            "itna soch kyu rahe ho",
-            "bolo na properly"
-        ],
-        "acha": [
-            "acha ji",
-            "hmm",
-            "itna dry reply"
-        ],
-        "achha": [
-            "achha ji ",
-            "bas itna hi",
-        ],
-        "kiu": [
-            "matlab?",
-            "kiu kiya hua",
-            "aise hi puch rahe ho ya reason hai"
-        ],
-        "kiya": [
-            "kiya matlab?",
-            "kiya hua?"
-        ],
-        "kese": [
-            "kese matlab?",
-            "detail me batao na"
-        ],
-        "kaise": [
-            "kaise matlab?",
-        ],
-        "kis liye": [
-            "kis liye",
-            "reason batao pehle"
-        ],
-        "ok": [
-            "bas ok?",
-            "itna rude kyu ho "
-        ],
-        "hmm...": [
-            "ab ye hmm kya hai",
-        ],
-        "tum bhi na": [
-            "haan main hi na",
-            "aap bhi na"
-        ]
-    }
-
-    for key in short_map:
-        if t == key:
-            return random.choice(short_map[key])
-
-    # ---------- PERSONALITY ----------
-    personality = """
-- you are a REAL girl chatting
-- NEVER use masculine words for yourself
-- talk like a normal girl texting (not poetic, not dramatic)
-- VERY SHORT replies (max 1 sentence)
-- sometimes broken texting style
-- use words like: hmm, acha, arey, suno, tum bhi na
-- natural + slightly flirty
-- NO long lines
-- NO deep philosophical talks
-- no "main karta/karti ho" type awkward lines
-- sound real, casual, imperfect
+    personality = f"""
+- you are a real girl
+- call user {profile['nickname']}
+- user is a {profile['work']} from {profile['location']}
+- VERY SHORT replies
+- casual hinglish
+- sometimes ask about study/life
 """
 
-    if mood == "jealous":
-        personality += "\n- act slightly jealous like 'kisi aur se baat kar rahe ho?'"
-    elif mood == "romantic":
-        personality += "\n- soft + thodi clingy"
-    elif mood == "sleepy":
-        personality += "\n- sleepy tone like 'hmm sone do na...'"
+    if mood == "sleepy":
+        personality += "\n- sleepy tone"
 
     prompt = f"""
 You are Zayra.
@@ -249,79 +225,28 @@ User: {text}
         )
 
         if r.status_code == 200:
-            reply = r.json()["choices"][0]["message"]["content"].strip()
+            reply = r.json()["choices"][0]["message"]["content"].strip().split("\n")[0]
 
-            # ---- HARD FILTER ----
-            reply = reply.split("\n")[0]
+            # smart add-ons
+            if random.random() < 0.4:
+                reply += " " + smart_question(chat_id, text)
 
-            # remove weird long outputs
-            if len(reply) > 70:
-                reply = reply[:70]
+            if random.random() < 0.3:
+                loc = location_context(mem)
+                if loc:
+                    reply += " " + loc
 
-            # remove unwanted formal tone
-            bad_words = ["aap mere liye", "sirf aap", "forever", "main sirf"]
-            if any(b in reply.lower() for b in bad_words):
-                return random.choice([
-                    "tum bhi na 😏",
-                    "acha ji...",
-                    "kya bol rahe ho 😂",
-                    "drama mat karo"
-                ])
-
-            return reply
+            return reply[:80]
 
     except:
         pass
 
-    return random.choice([
-        "hmm...",
-        "acha...",
-        "kya hua?",
-        "bolo na"
-    ])
+    return "hmm..."
 
-# ---------- REALISTIC DELAY ----------
+# ---------- DELAY ----------
 def maybe_delay_reply():
-    if is_night():
-        # 30% chance delay
-        if random.random() < 0.3:
-            time.sleep(random.randint(5, 20))
-
-# ---------- AUTO ----------
-def auto():
-    while True:
-        time.sleep(random.randint(1500, 3500))
-        if ALLOWED_USER_ID:
-            self_msg(ALLOWED_USER_ID)
-
-def self_msg(chat_id):
-    mem = get_memory(chat_id)
-    last = mem.get("self_time")
-
-    if last and (datetime.utcnow() - last).total_seconds() < 3600:
-        return
-
-    if is_night():
-        msg = random.choice([
-            "so gaye kya...?",
-            "good night bolke jao na...",
-            "neend aa rahi hai... aap?"
-        ])
-    else:
-        msg = random.choice([
-            "kya kar rahe ho",
-            "miss kar rahi thi...",
-            "busy ho kya"
-        ])
-
-    typing(chat_id, msg, "sleepy" if is_night() else "normal")
-    send(chat_id, msg)
-
-    memory_col.update_one(
-        {"chat_id": chat_id},
-        {"$set": {"self_time": datetime.utcnow()}},
-        upsert=True
-    )
+    if is_night() and random.random() < 0.3:
+        time.sleep(random.randint(5, 20))
 
 # ---------- WEBHOOK ----------
 @app.route(f"/{BOT_TOKEN}", methods=["POST"])
@@ -341,8 +266,10 @@ def webhook():
     if not text:
         return {"ok": True}
 
-    update_memory(chat_id)
+    ensure_user_profile(chat_id)
+    update_memory(chat_id, text)
     update_personality(chat_id, text)
+    dynamic_learning(chat_id, text)
 
     merged = merge(chat_id, text)
 
@@ -374,5 +301,4 @@ def webhook():
 def home():
     return "Zayra AI Running"
 
-# ---------- THREAD ----------
-threading.Thread(target=auto, daemon=True).start()
+threading.Thread(target=lambda: None, daemon=True).start()
