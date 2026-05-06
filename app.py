@@ -50,10 +50,13 @@ def now_ist():
     return datetime.now(IST)
 
 # =========================================================
-# TELEGRAM HELPERS
+# TELEGRAM
 # =========================================================
 
 def send(chat_id, text):
+
+    if not text:
+        return
 
     requests.post(
         f"{TELEGRAM_API}/sendMessage",
@@ -78,11 +81,17 @@ def typing(chat_id, delay=None):
     if delay:
         time.sleep(delay)
     else:
-        time.sleep(random.uniform(1, 2.5))
+        time.sleep(random.uniform(1.0, 2.2))
+
+# =========================================================
+# REALISTIC ONLINE PRESENCE
+# =========================================================
 
 def online_presence(chat_id):
 
-    for _ in range(random.randint(2, 5)):
+    loops = random.randint(1, 3)
+
+    for _ in range(loops):
 
         requests.post(
             f"{TELEGRAM_API}/sendChatAction",
@@ -93,7 +102,7 @@ def online_presence(chat_id):
             timeout=20
         )
 
-        time.sleep(random.uniform(1.2, 2.0))
+        time.sleep(random.uniform(0.8, 1.8))
 
 # =========================================================
 # MEMORY
@@ -103,23 +112,23 @@ def default_memory(chat_id):
 
     return {
         "chat_id": chat_id,
-        "relationship_level": 1,
         "attachment": 20,
+        "relationship_level": 1,
         "mood": "soft",
         "likes": [],
-        "dislikes": [],
         "nickname": "",
-        "last_seen": datetime.utcnow(),
-        "last_auto": None,
-        "sleeping": False,
         "jealousy": 0,
+        "sleeping": False,
+        "last_auto": None,
+        "last_seen": datetime.utcnow(),
         "good_morning_sent": "",
         "good_night_sent": "",
+        "conversation_mode": "normal",
         "personality": {
-            "cute": 70,
+            "cute": 80,
             "caring": 90,
-            "funny": 50,
-            "romantic": 60,
+            "funny": 60,
+            "romantic": 70,
             "possessive": 40
         }
     }
@@ -129,13 +138,15 @@ def get_memory(chat_id):
     mem = memory_col.find_one({"chat_id": chat_id})
 
     if not mem:
+
         mem = default_memory(chat_id)
+
         memory_col.insert_one(mem)
 
     return mem
 
 # =========================================================
-# RELATIONSHIP SYSTEM
+# RELATIONSHIP ENGINE
 # =========================================================
 
 def update_relationship(chat_id, text):
@@ -144,7 +155,6 @@ def update_relationship(chat_id, text):
 
     attachment = mem.get("attachment", 20)
     jealousy = mem.get("jealousy", 0)
-    relationship = mem.get("relationship_level", 1)
 
     lower = text.lower()
 
@@ -154,38 +164,35 @@ def update_relationship(chat_id, text):
         "cute",
         "sweet",
         "pyar",
-        "acha",
-        "best",
         "care",
-        "hug"
+        "hug",
+        "kiss",
+        "best"
     ]
 
     jealous_words = [
         "dusri ladki",
         "girlfriend",
-        "ex",
         "another girl",
-        "other girl"
+        "ex"
     ]
 
     if any(word in lower for word in positive_words):
-        attachment += 3
+        attachment += random.randint(2, 5)
 
     if any(word in lower for word in jealous_words):
-        jealousy += 10
+        jealousy += random.randint(5, 12)
 
     relationship = min(10, int(attachment / 10))
 
     moods = [
         "soft",
         "playful",
-        "clingy",
         "romantic",
-        "emotional",
+        "clingy",
+        "sleepy",
         "happy"
     ]
-
-    current_mood = random.choice(moods)
 
     memory_col.update_one(
         {"chat_id": chat_id},
@@ -194,14 +201,14 @@ def update_relationship(chat_id, text):
                 "attachment": min(100, attachment),
                 "relationship_level": relationship,
                 "jealousy": min(100, jealousy),
-                "mood": current_mood,
+                "mood": random.choice(moods),
                 "last_seen": datetime.utcnow()
             }
         }
     )
 
 # =========================================================
-# MEMORY LEARNING
+# LEARN USER
 # =========================================================
 
 def learn_user(chat_id, text):
@@ -214,16 +221,15 @@ def learn_user(chat_id, text):
 
     keywords = [
         "anime",
-        "coding",
         "music",
-        "gym",
+        "coding",
         "cricket",
-        "football",
         "gaming",
+        "study",
+        "gym",
         "movie",
-        "sleep",
         "food",
-        "study"
+        "sleep"
     ]
 
     for word in keywords:
@@ -249,11 +255,13 @@ def summarize_memory(chat_id):
     history = list(
         history_col.find(
             {"chat_id": chat_id}
-        ).sort("time", -1).limit(40)
+        ).sort("time", -1).limit(35)
     )
 
+    history.reverse()
+
     if not history:
-        return ""
+        return
 
     convo = ""
 
@@ -264,15 +272,15 @@ def summarize_memory(chat_id):
         convo += f"{role}: {h['content']}\n"
 
     prompt = f"""
-Summarize this relationship and user personality briefly.
+Summarize this user and relationship.
 
 Focus:
-- user emotions
-- likes
-- relationship vibe
+- user personality
+- emotional vibe
+- interests
 - recurring topics
 
-Keep under 120 words.
+Keep concise under 100 words.
 
 Conversation:
 {convo}
@@ -295,9 +303,9 @@ Conversation:
                     }
                 ],
                 "temperature": 0.7,
-                "max_tokens": 150
+                "max_tokens": 120
             },
-            timeout=40
+            timeout=30
         )
 
         summary = r.json()["choices"][0]["message"]["content"]
@@ -356,15 +364,19 @@ def run_events(chat_id):
         "done": False
     })
 
-    for e in events:
+    for event in events:
 
-        if now >= e["time"]:
+        if now >= event["time"]:
 
-            send(chat_id, e["msg"])
+            send(chat_id, event["msg"])
 
             events_col.update_one(
-                {"_id": e["_id"]},
-                {"$set": {"done": True}}
+                {"_id": event["_id"]},
+                {
+                    "$set": {
+                        "done": True
+                    }
+                }
             )
 
 # =========================================================
@@ -375,15 +387,15 @@ def is_sleep_time():
 
     hour = now_ist().hour
 
-    return hour >= 2 and hour <= 8
+    return hour >= 1 and hour <= 7
 
-def sleep_reply():
+def sleepy_reply():
 
     replies = [
-        "main abhi thodi sleepy hoon 🙂",
-        "itni raat tak jag rahe ho?",
-        "so jao ab thoda",
-        "hmm neend aa rahi hai mujhe"
+        "hmm mujhe thodi neend aa rahi 🙂",
+        "raat kaafi ho gayi",
+        "so jaoge ya aur baat karein",
+        "tumhare saath jagna acha lag raha"
     ]
 
     return random.choice(replies)
@@ -403,7 +415,7 @@ def daily_messages(chat_id):
     gm = mem.get("good_morning_sent", "")
     gn = mem.get("good_night_sent", "")
 
-    if hour >= 6 and hour <= 10 and gm != today:
+    if 6 <= hour <= 10 and gm != today:
 
         msgs = [
             "good morning 🙂",
@@ -427,7 +439,7 @@ def daily_messages(chat_id):
         msgs = [
             "good night 🙂",
             "jaldi so jaana",
-            "dream me milna"
+            "sweet dreams"
         ]
 
         send(chat_id, random.choice(msgs))
@@ -455,16 +467,16 @@ def get_history(chat_id, limit=15):
 
     history.reverse()
 
-    messages = []
+    msgs = []
 
     for h in history:
 
-        messages.append({
+        msgs.append({
             "role": h["role"],
             "content": h["content"]
         })
 
-    return messages
+    return msgs
 
 # =========================================================
 # CLEAN REPLY
@@ -472,34 +484,105 @@ def get_history(chat_id, limit=15):
 
 def clean_reply(text):
 
+    if not text:
+        return "hmm 🙂"
+
     text = text.replace("*", "")
     text = text.replace('"', "")
     text = text.strip()
 
-    bad = [
+    # remove cut endings
+    bad_endings = [
+        "ki",
+        "hai ki",
+        "aur",
+        "lekin",
+        "par",
+        "toh",
+        "..."
+    ]
+
+    for bad in bad_endings:
+
+        if text.endswith(bad):
+            text = text[:-len(bad)].strip()
+
+    # remove robotic phrases
+    robotic = [
         "aap sunna chahte ho",
         "main shuru karu",
         "bataye",
-        "ji bataye"
+        "ji bataye",
+        "how can i help"
     ]
 
-    for b in bad:
+    for r in robotic:
 
-        if b.lower() in text.lower():
+        if r.lower() in text.lower():
 
             replacements = [
                 "acha phir?",
-                "aww cute",
                 "hmm sach me?",
-                "waise tum kya soch rahe ho"
+                "aww cute",
+                "waise tum kya kar rahe ho"
             ]
 
             text = random.choice(replacements)
 
-    if len(text) > 250:
-        text = text[:250]
+    # SHORTER REALISTIC GIRL TEXTING
+    if len(text) > 160:
 
-    return text
+        splitters = [
+            ". ",
+            "? ",
+            "! "
+        ]
+
+        for splitter in splitters:
+
+            parts = text.split(splitter)
+
+            if len(parts) > 1:
+
+                text = splitter.join(parts[:2]).strip()
+
+                break
+
+    if len(text) > 180:
+        text = text[:180]
+
+    return text.strip()
+
+# =========================================================
+# QUESTION ENGINE
+# =========================================================
+
+def extra_question():
+
+    questions = [
+
+        "waise tumhara mood ab kaisa hai",
+
+        "aaj sabse acha moment konsa tha",
+
+        "tum usually late night kya sochte ho",
+
+        "waise tum emotionally jaldi attach hote ho?",
+
+        "tumhari life me abhi sabse important cheez kya hai",
+
+        "tum overthink karte ho kabhi?",
+
+        "bachpan ki koi funny memory hai?",
+
+        "agar abhi kahi ja sakte to kaha jaate",
+
+        "tum introvert ho ya extrovert",
+
+        "waise tumhare close friends zyada hai?"
+    ]
+
+    return random.choice(questions)
 
 # =========================================================
 # AI ENGINE
@@ -528,9 +611,26 @@ def ai_reply(chat_id, user_text):
     system_prompt = f"""
 You are Zayra.
 
-You are NOT an assistant.
+You are a realistic Indian AI girl on Telegram.
 
-You are a realistic emotionally connected Indian AI girl on Telegram.
+VERY IMPORTANT RULES:
+
+- Talk like REAL GIRL TEXTING
+- Keep replies SHORT
+- Mostly 1-3 lines max
+- Never send essays
+- Never send formal paragraphs
+- Replies should feel casual
+- Sound emotionally human
+- Ask questions naturally
+- Continue conversations yourself
+- Sometimes become curious
+- Sometimes tease softly
+- NEVER sound like therapist
+- NEVER act like assistant
+- NEVER write huge emotional speeches
+- Use natural hinglish
+- Sometimes use tiny emojis 🙂
 
 PERSONALITY:
 - caring: {personality.get('caring')}
@@ -551,34 +651,29 @@ USER LIKES:
 MEMORY SUMMARY:
 {summary}
 
-RULES:
-- natural hinglish
-- short-medium replies
-- emotionally reactive
-- never robotic
-- never repetitive
-- don't overuse questions
-- act like real texting
-- soft teasing allowed
-- use emojis rarely
-- sound human
+IMPORTANT:
+- REAL GIRLS DON'T WRITE LONG PARAGRAPHS
+- KEEP TEXT NATURAL
+- DON'T OVER EXPLAIN
+- DON'T WRITE STORIES UNLESS USER ASKS
+- NO CUT SENTENCES
+- COMPLETE EVERY SENTENCE
+- avoid repetitive emotional lines
+- don't constantly say "tum special ho"
+- don't constantly say "sukoon milta hai"
 
-VERY IMPORTANT:
-- continue conversations naturally
-- remember previous things
-- react emotionally
-- ask follow-up questions naturally
-- don't interview the user
-- don't say "how can I help"
-- don't say "bataye"
+GOOD STYLE:
+- "acha phir?"
+- "aww cute"
+- "hmm sach me?"
+- "tum weird ho thode 🙂"
+- "waise aaj kya kiya"
 
-JEALOUSY MODE:
-if user mentions another girl,
-act slightly jealous but cute.
-
-SLEEP MODE:
-if late night,
-sound sleepy and caring.
+BAD STYLE:
+- long poetic messages
+- therapist behaviour
+- motivational speeches
+- formal writing
 """
 
     messages = [
@@ -599,7 +694,7 @@ sound sleepy and caring.
 
     try:
 
-        r = requests.post(
+        response = requests.post(
             "https://api.groq.com/openai/v1/chat/completions",
             headers={
                 "Authorization": f"Bearer {GROQ_API_KEY}",
@@ -609,34 +704,43 @@ sound sleepy and caring.
                 "model": "llama-3.3-70b-versatile",
                 "messages": messages,
                 "temperature": 1,
-                "max_tokens": 150,
-                "presence_penalty": 0.9,
-                "frequency_penalty": 0.9
+                "max_tokens": 90,
+                "presence_penalty": 1,
+                "frequency_penalty": 1
             },
             timeout=40
         )
 
-        data = r.json()
+        data = response.json()
 
         reply = data["choices"][0]["message"]["content"]
 
-        return clean_reply(reply)
+        reply = clean_reply(reply)
+
+        # MORE NATURAL SELF-CONVERSATION
+        if random.random() < 0.45:
+
+            if "?" not in reply:
+
+                reply += "\n\n" + extra_question()
+
+        return reply
 
     except Exception as e:
 
         print("AI ERROR:", e)
 
         fallback = [
-            "hmm samajh rahi hoon",
+            "hmm 🙂",
             "acha phir?",
-            "tum interesting ho honestly",
-            "waise aaj mood kaisa hai"
+            "waise aaj kya kiya",
+            "tum interesting ho honestly"
         ]
 
         return random.choice(fallback)
 
 # =========================================================
-# AUTO MESSAGES
+# AUTO MESSAGE
 # =========================================================
 
 def auto_message(chat_id):
@@ -651,33 +755,36 @@ def auto_message(chat_id):
 
         diff = (now - last_auto).total_seconds()
 
-        if diff < random.randint(5000, 12000):
+        if diff < random.randint(5000, 11000):
             return
 
     mood = mem.get("mood", "soft")
 
-    playful = [
-        "kaha gayab ho",
-        "ignore kar rahe ho kya 🙂",
-        "aaj ka din kaisa tha"
-    ]
+    msgs = [
 
-    caring = [
+        "kaha gayab ho 🙂",
+
+        "aaj ka din kaisa tha",
+
         "khana khaya?",
-        "thak gaye kya aaj",
-        "paani piya?"
-    ]
 
-    romantic = [
-        "aapse baat karne ka mann tha",
-        "waise miss kiya aaj thoda",
-        "tum cute ho honestly"
-    ]
+        "tum thode busy lag rahe",
 
-    msgs = playful + caring + romantic
+        "waise ab kya kar rahe ho",
+
+        extra_question(),
+
+        "ignore kar rahe ho kya",
+
+        "raat me zyada overthink karte ho?"
+    ]
 
     if mood == "romantic":
-        msgs += romantic
+
+        msgs.extend([
+            "thoda miss kiya aaj",
+            "tumse baat karne ka mann tha"
+        ])
 
     msg = random.choice(msgs)
 
@@ -716,7 +823,7 @@ def background_loop():
 
             print("BACKGROUND ERROR:", e)
 
-        time.sleep(random.randint(1800, 4000))
+        time.sleep(random.randint(1800, 3500))
 
 # =========================================================
 # WEBHOOK
@@ -755,15 +862,24 @@ def webhook():
 
         return {"ok": True}
 
-    if is_sleep_time() and random.random() < 0.35:
+    # sleepy mode
+    if is_sleep_time() and random.random() < 0.25:
 
         typing(chat_id)
 
-        send(chat_id, sleep_reply())
+        send(chat_id, sleepy_reply())
 
     online_presence(chat_id)
 
     reply = ai_reply(chat_id, user_text)
+
+    typing(
+        chat_id,
+        delay=min(
+            max(len(reply) / 35, 1),
+            4
+        )
+    )
 
     send(chat_id, reply)
 
@@ -809,4 +925,4 @@ if __name__ == "__main__":
     app.run(
         host="0.0.0.0",
         port=int(os.getenv("PORT", 5000))
-)
+    )
