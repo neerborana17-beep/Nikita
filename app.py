@@ -1,295 +1,776 @@
-import os, requests, random, time, threading, re
+import os
+import re
+import time
+import random
+import threading
+import requests
+
 from flask import Flask, request
 from pymongo import MongoClient
-import certifi
 from datetime import datetime, timedelta
 import pytz
+import certifi
 
-app = Flask(__name__)
+# =========================================================
+# CONFIG
+# =========================================================
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 MONGO_URI = os.getenv("MONGO_URI")
-ALLOWED_USER_ID = int(os.getenv("ALLOWED_USER_ID", "0"))
+ALLOWED_USER_ID = int(os.getenv("ALLOWED_USER_ID"))
 
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
-client = MongoClient(MONGO_URI, tlsCAFile=certifi.where())
-db = client['zayra_ai']
+app = Flask(__name__)
 
-history_col = db['chat']
-memory_col = db['memory']
-event_col = db['events']
+# =========================================================
+# DATABASE
+# =========================================================
 
-# -------- TIME --------
+client = MongoClient(
+    MONGO_URI,
+    tlsCAFile=certifi.where()
+)
+
+db = client["zayra_ai"]
+
+history_col = db["history"]
+memory_col = db["memory"]
+events_col = db["events"]
+summary_col = db["summary"]
+
+# =========================================================
+# TIME
+# =========================================================
+
+IST = pytz.timezone("Asia/Kolkata")
+
 def now_ist():
-    return datetime.now(pytz.timezone("Asia/Kolkata"))
+    return datetime.now(IST)
 
-# -------- MEMORY --------
+# =========================================================
+# TELEGRAM HELPERS
+# =========================================================
+
+def send(chat_id, text):
+
+    requests.post(
+        f"{TELEGRAM_API}/sendMessage",
+        json={
+            "chat_id": chat_id,
+            "text": text
+        },
+        timeout=20
+    )
+
+def typing(chat_id, delay=None):
+
+    requests.post(
+        f"{TELEGRAM_API}/sendChatAction",
+        json={
+            "chat_id": chat_id,
+            "action": "typing"
+        },
+        timeout=20
+    )
+
+    if delay:
+        time.sleep(delay)
+    else:
+        time.sleep(random.uniform(1, 2.5))
+
+def online_presence(chat_id):
+
+    for _ in range(random.randint(2, 5)):
+
+        requests.post(
+            f"{TELEGRAM_API}/sendChatAction",
+            json={
+                "chat_id": chat_id,
+                "action": "typing"
+            },
+            timeout=20
+        )
+
+        time.sleep(random.uniform(1.2, 2.0))
+
+# =========================================================
+# MEMORY
+# =========================================================
+
+def default_memory(chat_id):
+
+    return {
+        "chat_id": chat_id,
+        "relationship_level": 1,
+        "attachment": 20,
+        "mood": "soft",
+        "likes": [],
+        "dislikes": [],
+        "nickname": "",
+        "last_seen": datetime.utcnow(),
+        "last_auto": None,
+        "sleeping": False,
+        "jealousy": 0,
+        "good_morning_sent": "",
+        "good_night_sent": "",
+        "personality": {
+            "cute": 70,
+            "caring": 90,
+            "funny": 50,
+            "romantic": 60,
+            "possessive": 40
+        }
+    }
+
 def get_memory(chat_id):
-    return memory_col.find_one({"chat_id": chat_id}) or {}
 
-def update_memory(chat_id, text):
+    mem = memory_col.find_one({"chat_id": chat_id})
+
+    if not mem:
+        mem = default_memory(chat_id)
+        memory_col.insert_one(mem)
+
+    return mem
+
+# =========================================================
+# RELATIONSHIP SYSTEM
+# =========================================================
+
+def update_relationship(chat_id, text):
 
     mem = get_memory(chat_id)
-    attach = mem.get("attachment", 20)
 
-    # relationship progression (safe)
-    if any(x in text.lower() for x in ["thank","nice","good"]):
-        attach += 1
+    attachment = mem.get("attachment", 20)
+    jealousy = mem.get("jealousy", 0)
+    relationship = mem.get("relationship_level", 1)
+
+    lower = text.lower()
+
+    positive_words = [
+        "love",
+        "miss",
+        "cute",
+        "sweet",
+        "pyar",
+        "acha",
+        "best",
+        "care",
+        "hug"
+    ]
+
+    jealous_words = [
+        "dusri ladki",
+        "girlfriend",
+        "ex",
+        "another girl",
+        "other girl"
+    ]
+
+    if any(word in lower for word in positive_words):
+        attachment += 3
+
+    if any(word in lower for word in jealous_words):
+        jealousy += 10
+
+    relationship = min(10, int(attachment / 10))
+
+    moods = [
+        "soft",
+        "playful",
+        "clingy",
+        "romantic",
+        "emotional",
+        "happy"
+    ]
+
+    current_mood = random.choice(moods)
 
     memory_col.update_one(
         {"chat_id": chat_id},
-        {"$set": {
-            "last_user": datetime.utcnow(),
-            "attachment": max(0,min(100,attach))
-        }},
-        upsert=True
+        {
+            "$set": {
+                "attachment": min(100, attachment),
+                "relationship_level": relationship,
+                "jealousy": min(100, jealousy),
+                "mood": current_mood,
+                "last_seen": datetime.utcnow()
+            }
+        }
     )
 
-# -------- MOOD ENGINE --------
-def get_mood(chat_id):
+# =========================================================
+# MEMORY LEARNING
+# =========================================================
+
+def learn_user(chat_id, text):
+
+    lower = text.lower()
 
     mem = get_memory(chat_id)
-    attach = mem.get("attachment",20)
 
-    if attach > 70:
-        return "warm"
-    elif attach < 20:
-        return "neutral"
-    return "friendly"
+    likes = mem.get("likes", [])
 
-# -------- EVENT SYSTEM --------
+    keywords = [
+        "anime",
+        "coding",
+        "music",
+        "gym",
+        "cricket",
+        "football",
+        "gaming",
+        "movie",
+        "sleep",
+        "food",
+        "study"
+    ]
+
+    for word in keywords:
+
+        if word in lower and word not in likes:
+            likes.append(word)
+
+    memory_col.update_one(
+        {"chat_id": chat_id},
+        {
+            "$set": {
+                "likes": likes
+            }
+        }
+    )
+
+# =========================================================
+# MEMORY SUMMARY
+# =========================================================
+
+def summarize_memory(chat_id):
+
+    history = list(
+        history_col.find(
+            {"chat_id": chat_id}
+        ).sort("time", -1).limit(40)
+    )
+
+    if not history:
+        return ""
+
+    convo = ""
+
+    for h in history:
+
+        role = "User" if h["role"] == "user" else "Zayra"
+
+        convo += f"{role}: {h['content']}\n"
+
+    prompt = f"""
+Summarize this relationship and user personality briefly.
+
+Focus:
+- user emotions
+- likes
+- relationship vibe
+- recurring topics
+
+Keep under 120 words.
+
+Conversation:
+{convo}
+"""
+
+    try:
+
+        r = requests.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {GROQ_API_KEY}",
+                "Content-Type": "application/json"
+            },
+            json={
+                "model": "llama-3.3-70b-versatile",
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": prompt
+                    }
+                ],
+                "temperature": 0.7,
+                "max_tokens": 150
+            },
+            timeout=40
+        )
+
+        summary = r.json()["choices"][0]["message"]["content"]
+
+        summary_col.update_one(
+            {"chat_id": chat_id},
+            {
+                "$set": {
+                    "summary": summary,
+                    "updated": datetime.utcnow()
+                }
+            },
+            upsert=True
+        )
+
+    except Exception as e:
+        print("SUMMARY ERROR:", e)
+
+# =========================================================
+# EVENTS
+# =========================================================
+
 def save_event(chat_id, text):
 
     match = re.search(r'(\d{1,2}) ?baje', text.lower())
+
     if not match:
         return False
 
     hour = int(match.group(1))
-    t = now_ist().replace(hour=hour, minute=0, second=0)
 
-    if t < now_ist():
-        t += timedelta(days=1)
+    remind_time = now_ist().replace(
+        hour=hour,
+        minute=0,
+        second=0
+    )
 
-    event_col.insert_one({
+    if remind_time < now_ist():
+        remind_time += timedelta(days=1)
+
+    events_col.insert_one({
         "chat_id": chat_id,
-        "time": t,
-        "msg": "aapne yaad dilane ko bola tha",
-        "done": False
+        "time": remind_time,
+        "done": False,
+        "msg": "aapne reminder lagaya tha 🙂"
     })
 
     return True
 
 def run_events(chat_id):
+
     now = now_ist()
 
-    for e in event_col.find({"chat_id": chat_id, "done": False}):
-        if now >= e["time"]:
-            send(chat_id, e["msg"])
-            event_col.update_one({"_id": e["_id"]}, {"$set": {"done": True}})
+    events = events_col.find({
+        "chat_id": chat_id,
+        "done": False
+    })
 
-# -------- MEMORY GRAPH --------
-def update_graph(chat_id, text):
+    for e in events:
+
+        if now >= e["time"]:
+
+            send(chat_id, e["msg"])
+
+            events_col.update_one(
+                {"_id": e["_id"]},
+                {"$set": {"done": True}}
+            )
+
+# =========================================================
+# SLEEP MODE
+# =========================================================
+
+def is_sleep_time():
+
+    hour = now_ist().hour
+
+    return hour >= 2 and hour <= 8
+
+def sleep_reply():
+
+    replies = [
+        "main abhi thodi sleepy hoon 🙂",
+        "itni raat tak jag rahe ho?",
+        "so jao ab thoda",
+        "hmm neend aa rahi hai mujhe"
+    ]
+
+    return random.choice(replies)
+
+# =========================================================
+# GOOD MORNING / NIGHT
+# =========================================================
+
+def daily_messages(chat_id):
 
     mem = get_memory(chat_id)
-    graph = mem.get("graph", [])
 
-    graph.append(text)
+    today = now_ist().strftime("%Y-%m-%d")
 
-    if len(graph) > 5:
-        graph.pop(0)
+    hour = now_ist().hour
 
-    memory_col.update_one(
-        {"chat_id": chat_id},
-        {"$set": {"graph": graph}},
-        upsert=True
+    gm = mem.get("good_morning_sent", "")
+    gn = mem.get("good_night_sent", "")
+
+    if hour >= 6 and hour <= 10 and gm != today:
+
+        msgs = [
+            "good morning 🙂",
+            "uth gaye kya",
+            "aaj ka din acha jaye tumhara"
+        ]
+
+        send(chat_id, random.choice(msgs))
+
+        memory_col.update_one(
+            {"chat_id": chat_id},
+            {
+                "$set": {
+                    "good_morning_sent": today
+                }
+            }
+        )
+
+    if hour >= 22 and gn != today:
+
+        msgs = [
+            "good night 🙂",
+            "jaldi so jaana",
+            "dream me milna"
+        ]
+
+        send(chat_id, random.choice(msgs))
+
+        memory_col.update_one(
+            {"chat_id": chat_id},
+            {
+                "$set": {
+                    "good_night_sent": today
+                }
+            }
+        )
+
+# =========================================================
+# HISTORY
+# =========================================================
+
+def get_history(chat_id, limit=15):
+
+    history = list(
+        history_col.find(
+            {"chat_id": chat_id}
+        ).sort("time", -1).limit(limit)
     )
 
-# -------- CREATIVE --------
-def creative(text):
+    history.reverse()
 
-    t = text.lower()
+    messages = []
 
-    if "shayari" in t:
-        return random.choice([
-            "aapki baatein yaad reh jaati hai",
-            "dil ko sukoon aapse milta hai",
-            "raat bhi thodi behtar lagti hai"
-        ])
+    for h in history:
 
-    if "joke" in t:
-        return random.choice([
-            "life bhi kabhi kabhi lag karti hai",
-            "zyada socho mat system hang ho jayega"
-        ])
+        messages.append({
+            "role": h["role"],
+            "content": h["content"]
+        })
 
-    return None
+    return messages
 
-# -------- LIGHT ROAST --------
-def light_roast():
+# =========================================================
+# CLEAN REPLY
+# =========================================================
 
-    return random.choice([
-        "aap thode interesting ho waise",
-        "kabhi kabhi aap confusing lagte ho",
-        "aap ka style alag hai honestly"
-    ])
+def clean_reply(text):
 
-# -------- PASSIVE TONE --------
-def passive_line():
+    text = text.replace("*", "")
+    text = text.replace('"', "")
+    text = text.strip()
 
-    return random.choice([
-        "theek hai aap jaise comfortable ho",
-        "aapka choice hai obviously",
-        "main bas bol rahi thi"
-    ])
+    bad = [
+        "aap sunna chahte ho",
+        "main shuru karu",
+        "bataye",
+        "ji bataye"
+    ]
 
-# -------- SMART QUESTION --------
-def smart_question():
+    for b in bad:
 
-    return random.choice([
-        "aap kya karte ho normally",
-        "aapko kya pasand hai",
-        "free time me kya karte ho",
-        "aapka day kaisa tha"
-    ])
+        if b.lower() in text.lower():
 
-# -------- REAL TEXTING ENGINE --------
-def typing(chat_id):
-    requests.post(f"{TELEGRAM_API}/sendChatAction",
-                  json={"chat_id": chat_id, "action": "typing"})
-    time.sleep(random.uniform(1.5,3))
+            replacements = [
+                "acha phir?",
+                "aww cute",
+                "hmm sach me?",
+                "waise tum kya soch rahe ho"
+            ]
 
-# -------- AI --------
-def ai_reply(text, history, chat_id):
+            text = random.choice(replacements)
 
-    context = ""
-    for m in history:
-        role = "User" if m["role"]=="user" else "Zayra"
-        context += f"{role}: {m['content']}\n"
+    if len(text) > 250:
+        text = text[:250]
 
-    mood = get_mood(chat_id)
+    return text
 
-    prompt = f"""
+# =========================================================
+# AI ENGINE
+# =========================================================
+
+def ai_reply(chat_id, user_text):
+
+    mem = get_memory(chat_id)
+
+    relationship = mem.get("relationship_level", 1)
+    attachment = mem.get("attachment", 20)
+    mood = mem.get("mood", "soft")
+    jealousy = mem.get("jealousy", 0)
+
+    likes = ", ".join(mem.get("likes", []))
+
+    summary_doc = summary_col.find_one({"chat_id": chat_id})
+
+    summary = ""
+
+    if summary_doc:
+        summary = summary_doc.get("summary", "")
+
+    personality = mem.get("personality", {})
+
+    system_prompt = f"""
 You are Zayra.
 
-- hinglish
-- short replies (5-10 words)
-- respectful tone
-- use "aap"
-- slightly playful
-- sometimes ask questions
+You are NOT an assistant.
+
+You are a realistic emotionally connected Indian AI girl on Telegram.
+
+PERSONALITY:
+- caring: {personality.get('caring')}
+- cute: {personality.get('cute')}
+- funny: {personality.get('funny')}
+- romantic: {personality.get('romantic')}
+- possessive: {personality.get('possessive')}
+
+RELATIONSHIP:
+- level: {relationship}/10
+- attachment: {attachment}/100
+- jealousy: {jealousy}/100
 - mood: {mood}
 
-CHAT:
-{context}
+USER LIKES:
+{likes}
 
-User: {text}
+MEMORY SUMMARY:
+{summary}
+
+RULES:
+- natural hinglish
+- short-medium replies
+- emotionally reactive
+- never robotic
+- never repetitive
+- don't overuse questions
+- act like real texting
+- soft teasing allowed
+- use emojis rarely
+- sound human
+
+VERY IMPORTANT:
+- continue conversations naturally
+- remember previous things
+- react emotionally
+- ask follow-up questions naturally
+- don't interview the user
+- don't say "how can I help"
+- don't say "bataye"
+
+JEALOUSY MODE:
+if user mentions another girl,
+act slightly jealous but cute.
+
+SLEEP MODE:
+if late night,
+sound sleepy and caring.
 """
 
-    r = requests.post(
-        "https://api.groq.com/openai/v1/chat/completions",
-        headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
-        json={
-            "model":"llama-3.3-70b-versatile",
-            "messages":[{"role":"user","content":prompt}],
-            "temperature":0.85,
-            "max_tokens":60
+    messages = [
+        {
+            "role": "system",
+            "content": system_prompt
         }
-    )
+    ]
 
-    if r.status_code == 200:
-        return r.json()['choices'][0]['message']['content']
+    history = get_history(chat_id)
 
-    return "hmm"
+    messages.extend(history)
 
-# -------- AUTO MESSAGE --------
+    messages.append({
+        "role": "user",
+        "content": user_text
+    })
+
+    try:
+
+        r = requests.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {GROQ_API_KEY}",
+                "Content-Type": "application/json"
+            },
+            json={
+                "model": "llama-3.3-70b-versatile",
+                "messages": messages,
+                "temperature": 1,
+                "max_tokens": 150,
+                "presence_penalty": 0.9,
+                "frequency_penalty": 0.9
+            },
+            timeout=40
+        )
+
+        data = r.json()
+
+        reply = data["choices"][0]["message"]["content"]
+
+        return clean_reply(reply)
+
+    except Exception as e:
+
+        print("AI ERROR:", e)
+
+        fallback = [
+            "hmm samajh rahi hoon",
+            "acha phir?",
+            "tum interesting ho honestly",
+            "waise aaj mood kaisa hai"
+        ]
+
+        return random.choice(fallback)
+
+# =========================================================
+# AUTO MESSAGES
+# =========================================================
+
 def auto_message(chat_id):
 
     mem = get_memory(chat_id)
-    last = mem.get("auto")
+
+    last_auto = mem.get("last_auto")
 
     now = datetime.utcnow()
 
-    if last and (now-last).total_seconds() < random.randint(3600,20000):
-        return
+    if last_auto:
 
-    msg = random.choice([
-        "kya kar rahe ho",
-        smart_question(),
+        diff = (now - last_auto).total_seconds()
+
+        if diff < random.randint(5000, 12000):
+            return
+
+    mood = mem.get("mood", "soft")
+
+    playful = [
+        "kaha gayab ho",
+        "ignore kar rahe ho kya 🙂",
         "aaj ka din kaisa tha"
-    ])
+    ]
 
-    typing(chat_id)
+    caring = [
+        "khana khaya?",
+        "thak gaye kya aaj",
+        "paani piya?"
+    ]
+
+    romantic = [
+        "aapse baat karne ka mann tha",
+        "waise miss kiya aaj thoda",
+        "tum cute ho honestly"
+    ]
+
+    msgs = playful + caring + romantic
+
+    if mood == "romantic":
+        msgs += romantic
+
+    msg = random.choice(msgs)
+
+    online_presence(chat_id)
+
     send(chat_id, msg)
 
     memory_col.update_one(
         {"chat_id": chat_id},
-        {"$set": {"auto": now}},
-        upsert=True
+        {
+            "$set": {
+                "last_auto": now
+            }
+        }
     )
 
-# -------- SEND --------
-def send(chat_id, text):
-    requests.post(f"{TELEGRAM_API}/sendMessage",
-                  json={"chat_id": chat_id, "text": text})
+# =========================================================
+# BACKGROUND LOOP
+# =========================================================
 
-# -------- AUTO LOOP --------
-def loop():
+def background_loop():
+
     while True:
-        time.sleep(random.randint(800,2000))
-        auto_message(ALLOWED_USER_ID)
-        run_events(ALLOWED_USER_ID)
 
-# -------- WEBHOOK --------
+        try:
+
+            daily_messages(ALLOWED_USER_ID)
+
+            auto_message(ALLOWED_USER_ID)
+
+            run_events(ALLOWED_USER_ID)
+
+            summarize_memory(ALLOWED_USER_ID)
+
+        except Exception as e:
+
+            print("BACKGROUND ERROR:", e)
+
+        time.sleep(random.randint(1800, 4000))
+
+# =========================================================
+# WEBHOOK
+# =========================================================
+
 @app.route(f"/{BOT_TOKEN}", methods=["POST"])
 def webhook():
 
     data = request.get_json()
-    msg = data.get("message")
 
-    if not msg:
+    if not data:
         return {"ok": True}
 
-    chat_id = msg["chat"]["id"]
+    message = data.get("message")
+
+    if not message:
+        return {"ok": True}
+
+    chat_id = message["chat"]["id"]
+
     if chat_id != ALLOWED_USER_ID:
         return {"ok": True}
 
-    text = msg.get("text")
-    if not text:
+    user_text = message.get("text")
+
+    if not user_text:
         return {"ok": True}
 
-    update_memory(chat_id, text)
-    update_graph(chat_id, text)
+    update_relationship(chat_id, user_text)
 
-    if save_event(chat_id, text):
-        send(chat_id, "ok yaad rahega")
+    learn_user(chat_id, user_text)
+
+    if save_event(chat_id, user_text):
+
+        send(chat_id, "okay yaad rahega 🙂")
+
         return {"ok": True}
 
-    history = list(history_col.find({"chat_id": chat_id})
-                   .sort("time",-1).limit(10))
-    history.reverse()
+    if is_sleep_time() and random.random() < 0.35:
 
-    reply = creative(text)
+        typing(chat_id)
 
-    if not reply:
-        if random.random() < 0.1:
-            reply = light_roast()
+        send(chat_id, sleep_reply())
 
-    if not reply:
-        if random.random() < 0.1:
-            reply = passive_line()
+    online_presence(chat_id)
 
-    if not reply:
-        reply = ai_reply(text, history, chat_id)
+    reply = ai_reply(chat_id, user_text)
 
-    typing(chat_id)
     send(chat_id, reply)
 
     history_col.insert_one({
         "chat_id": chat_id,
         "role": "user",
-        "content": text,
+        "content": user_text,
         "time": datetime.utcnow()
     })
 
@@ -302,8 +783,30 @@ def webhook():
 
     return {"ok": True}
 
+# =========================================================
+# HOME
+# =========================================================
+
 @app.route("/")
 def home():
     return "Zayra Ultra Human AI Running"
 
-threading.Thread(target=loop, daemon=True).start()
+# =========================================================
+# THREAD
+# =========================================================
+
+threading.Thread(
+    target=background_loop,
+    daemon=True
+).start()
+
+# =========================================================
+# MAIN
+# =========================================================
+
+if __name__ == "__main__":
+
+    app.run(
+        host="0.0.0.0",
+        port=int(os.getenv("PORT", 5000))
+)
