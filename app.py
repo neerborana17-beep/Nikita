@@ -323,17 +323,15 @@ def set_activity(chat_id):
     end_time = now + timedelta(minutes=mins)
 
     memory_col.update_one(
-        {"chat_id": chat_id},
-        {
-            "$set": {
+    {"chat_id": chat_id},
+    {
+        "$set": {
 
-                "last_activity": activity,
+            "last_seen": datetime.utcnow(),
 
-                "activity_time": now.isoformat(),
-
-                "activity_end": end_time.isoformat()
-            }
+            "double_text_sent": False
         }
+    }
     )
 
     return activity
