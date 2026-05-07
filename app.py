@@ -1,4 +1,3 @@
-from flask import Flask, request
 from telegram import Update
 from telegram.ext import (
     Application,
@@ -27,22 +26,13 @@ from dotenv import load_dotenv
 load_dotenv()
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 ALLOWED_USER_ID = int(os.getenv("ALLOWED_USER_ID"))
 
-app = Flask(__name__)
+# =========================
+# CREATE BOT
+# =========================
 
 telegram_app = Application.builder().token(TOKEN).build()
-
-# =========================
-# REALISTIC TYPING DELAY
-# =========================
-
-async def realistic_delay(text):
-    base = len(text) * 0.045
-    extra = random.uniform(1, 3)
-
-    await asyncio.sleep(base + extra)
 
 # =========================
 # ACCESS CONTROL
@@ -52,10 +42,24 @@ def is_allowed(user_id):
     return user_id == ALLOWED_USER_ID
 
 # =========================
-# MAIN MESSAGE HANDLER
+# REALISTIC DELAY
 # =========================
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def realistic_delay(text):
+
+    base = len(text) * 0.045
+    extra = random.uniform(1, 3)
+
+    await asyncio.sleep(base + extra)
+
+# =========================
+# MAIN HANDLER
+# =========================
+
+async def handle_message(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
     try:
 
@@ -63,7 +67,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = update.message.text
 
         # =========================
-        # ALLOWED USER CHECK
+        # PRIVATE ACCESS
         # =========================
 
         if not is_allowed(user_id):
@@ -74,10 +78,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             return
 
+        # =========================
+        # GET USER
+        # =========================
+
         user = get_user(user_id)
 
         # =========================
-        # SLEEP SYSTEM
+        # SLEEP MODE
         # =========================
 
         if is_sleeping():
@@ -96,7 +104,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         # =========================
-        # SAVE USER MESSAGE
+        # SAVE USER MEMORY
         # =========================
 
         add_memory(
@@ -107,7 +115,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
         # =========================
-        # TYPING SIMULATION
+        # TYPING ACTION
         # =========================
 
         await context.bot.send_chat_action(
@@ -116,16 +124,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
         # =========================
-        # RANDOM MOOD SYSTEM
+        # RANDOM MOOD
         # =========================
 
         user["mood"] = random_mood()
 
         # =========================
-        # GENERATE AI REPLY
+        # GENERATE REPLY
         # =========================
 
-        reply = generate_reply(user, text)
+        reply = generate_reply(
+            user,
+            text
+        )
 
         # =========================
         # REALISTIC DELAY
@@ -134,7 +145,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await realistic_delay(reply)
 
         # =========================
-        # HUMAN TEXTING MISTAKES
+        # TEXTING MISTAKES
         # =========================
 
         if random.randint(1, 100) < 20:
@@ -142,14 +153,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             mistakes = [
                 "\n\nwait i forgot 😭",
                 "\n\nnvm ignore that",
-                "\n\nidk why i said that 💀",
-                "\n\nomg typo"
+                "\n\nomg typo",
+                "\n\nidk why i said that 💀"
             ]
 
             reply += random.choice(mistakes)
 
         # =========================
-        # SEND REPLY
+        # SEND MESSAGE
         # =========================
 
         await update.message.reply_text(reply)
@@ -166,14 +177,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
         # =========================
-        # RELATIONSHIP PROGRESSION
+        # RELATIONSHIP SYSTEM
         # =========================
 
         affection, phase = increase_affection(user)
-
-        # =========================
-        # UPDATE USER STATE
-        # =========================
 
         update_user(user_id, {
             "affection": affection,
@@ -204,62 +211,24 @@ telegram_app.add_handler(
 )
 
 # =========================
-# HOME ROUTE
+# MAIN
 # =========================
 
-@app.route("/", methods=["GET"])
-def home():
-    return "AI GF BOT RUNNING"
+def main():
 
-# =========================
-# WEBHOOK ROUTE
-# =========================
+    print("AI GF BOT STARTED ❤️")
 
-@app.route("/webhook", methods=["POST"])
-async def webhook():
+    # START BACKGROUND SCHEDULER
+    start_scheduler()
 
-    try:
-
-        data = request.get_json()
-
-        update = Update.de_json(
-            data,
-            telegram_app.bot
-        )
-
-        await telegram_app.process_update(update)
-
-        return "ok"
-
-    except Exception as e:
-
-        print("WEBHOOK ERROR:", e)
-
-        return "error"
-
-# =========================
-# STARTUP
-# =========================
-
-async def main():
-
-    await telegram_app.bot.set_webhook(
-        url=f"{WEBHOOK_URL}/webhook"
+    # START TELEGRAM POLLING
+    telegram_app.run_polling(
+        drop_pending_updates=True
     )
 
 # =========================
-# RUN APP
+# RUN
 # =========================
 
 if __name__ == "__main__":
-
-    loop = asyncio.get_event_loop()
-
-    loop.run_until_complete(main())
-
-    start_scheduler()
-
-    app.run(
-        host="0.0.0.0",
-        port=10000
-    )
+    main()
