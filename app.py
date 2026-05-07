@@ -1060,5 +1060,13 @@ def daily_messages(chat_id):
         send(chat_id, random.choice(msgs))
 
         memory_col.update_one(
-            {"chat_id": chat_id},
-       
+    {"chat_id": chat_id},
+    {
+        "$set": {
+
+            "last_seen": datetime.utcnow(),
+
+            "double_text_sent": False
+        }
+    }
+        )
