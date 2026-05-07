@@ -1051,7 +1051,7 @@ def background_loop():
 # WEBHOOK
 # =========================================================
 
-@app.route(f"/{BOT_TOKEN}", methods=["POST"])
+@app.route("/webhook", methods=["POST"])
 def webhook():
 
     data = request.get_json()
