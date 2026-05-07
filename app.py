@@ -1054,85 +1054,37 @@ def background_loop():
 @app.route("/webhook", methods=["POST"])
 def webhook():
 
-    data = request.get_json()
+    print("WEBHOOK HIT")
 
-    if not data:
-        return {"ok": True}
+    try:
 
-    message = data.get("message")
+        data = request.get_json()
 
-    if not message:
-        return {"ok": True}
+        print(data)
 
-    chat_id = message["chat"]["id"]
+        if not data:
+            return {"ok": True}
 
-    if chat_id != ALLOWED_USER_ID:
-        return {"ok": True}
+        message = data.get("message")
 
-    user_text = message.get("text")
+        if not message:
+            return {"ok": True}
 
-    if not user_text:
-        return {"ok": True}
+        chat_id = message["chat"]["id"]
 
-    update_relationship(chat_id, user_text)
+        text = message.get("text", "")
 
-    learn_user(chat_id, user_text)
+        print("MESSAGE:", text)
 
-    memory_col.update_one(
-        {"chat_id": chat_id},
-        {
-            "$set": {
-
-                "last_seen": datetime.utcnow(),
-
-                "double_text_sent": False
-            }
-        }
-    )
-
-    if save_event(chat_id, user_text):
-
-        send(chat_id, "okay yaad rahega 🙂")
+        send(chat_id, "test reply 🙂")
 
         return {"ok": True}
 
-    online_presence(chat_id)
+    except Exception as e:
 
-    reply = ai_reply(chat_id, user_text)
+        print("WEBHOOK ERROR:", e)
 
-    typing(
-        chat_id,
-        delay=min(
-            max(len(reply) / 35, 1),
-            4
-        )
-    )
-
-    send(chat_id, reply)
-
-    history_col.insert_one({
-
-        "chat_id": chat_id,
-
-        "role": "user",
-
-        "content": user_text,
-
-        "time": datetime.utcnow()
-    })
-
-    history_col.insert_one({
-
-        "chat_id": chat_id,
-
-        "role": "assistant",
-
-        "content": reply,
-
-        "time": datetime.utcnow()
-    })
-
-    return {"ok": True}
+        return {"ok": False}
 
 # =========================================================
 # HOME
