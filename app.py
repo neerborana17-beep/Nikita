@@ -23,37 +23,50 @@ import random
 import os
 from dotenv import load_dotenv
 
+# =========================
+# LOAD ENV
+# =========================
+
 load_dotenv()
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 ALLOWED_USER_ID = int(os.getenv("ALLOWED_USER_ID"))
 
 # =========================
-# CREATE BOT
+# VALIDATION
+# =========================
+
+if not TOKEN:
+    raise Exception("TELEGRAM_BOT_TOKEN missing")
+
+# =========================
+# CREATE TELEGRAM APP
 # =========================
 
 telegram_app = Application.builder().token(TOKEN).build()
 
 # =========================
-# ACCESS CONTROL
+# ALLOWED USER CHECK
 # =========================
 
 def is_allowed(user_id):
     return user_id == ALLOWED_USER_ID
 
 # =========================
-# REALISTIC DELAY
+# REALISTIC TYPING DELAY
 # =========================
 
 async def realistic_delay(text):
 
-    base = len(text) * 0.045
-    extra = random.uniform(1, 3)
+    typing_time = len(text) * 0.04
+    extra_delay = random.uniform(1, 2.5)
 
-    await asyncio.sleep(base + extra)
+    await asyncio.sleep(
+        typing_time + extra_delay
+    )
 
 # =========================
-# MAIN HANDLER
+# MESSAGE HANDLER
 # =========================
 
 async def handle_message(
@@ -64,6 +77,10 @@ async def handle_message(
     try:
 
         user_id = update.effective_chat.id
+
+        if not update.message:
+            return
+
         text = update.message.text
 
         # =========================
@@ -79,18 +96,18 @@ async def handle_message(
             return
 
         # =========================
-        # GET USER
+        # LOAD USER
         # =========================
 
         user = get_user(user_id)
 
         # =========================
-        # SLEEP MODE
+        # SLEEP SYSTEM
         # =========================
 
         if is_sleeping():
 
-            sleepy_replies = [
+            sleepy_texts = [
                 "mmm sleepy rn 🥺",
                 "baby i'm trying to sleep",
                 "can we talk tomorrow 😭",
@@ -98,7 +115,7 @@ async def handle_message(
             ]
 
             await update.message.reply_text(
-                random.choice(sleepy_replies)
+                random.choice(sleepy_texts)
             )
 
             return
@@ -111,7 +128,7 @@ async def handle_message(
             user_id,
             "user",
             text,
-            tags=["chat", "user_message"]
+            tags=["chat", "message"]
         )
 
         # =========================
@@ -139,28 +156,28 @@ async def handle_message(
         )
 
         # =========================
-        # REALISTIC DELAY
+        # HUMAN-LIKE DELAY
         # =========================
 
         await realistic_delay(reply)
 
         # =========================
-        # TEXTING MISTAKES
+        # RANDOM DOUBLE TEXT
         # =========================
 
-        if random.randint(1, 100) < 20:
+        if random.randint(1, 100) < 18:
 
-            mistakes = [
-                "\n\nwait i forgot 😭",
-                "\n\nnvm ignore that",
+            extra = random.choice([
+                "\n\nwait 😭",
                 "\n\nomg typo",
-                "\n\nidk why i said that 💀"
-            ]
+                "\n\nignore that 💀",
+                "\n\nidk why i said that"
+            ])
 
-            reply += random.choice(mistakes)
+            reply += extra
 
         # =========================
-        # SEND MESSAGE
+        # SEND REPLY
         # =========================
 
         await update.message.reply_text(reply)
@@ -173,7 +190,7 @@ async def handle_message(
             user_id,
             "assistant",
             reply,
-            tags=["ai_reply", user["mood"]]
+            tags=["reply", user["mood"]]
         )
 
         # =========================
@@ -182,20 +199,25 @@ async def handle_message(
 
         affection, phase = increase_affection(user)
 
-        update_user(user_id, {
-            "affection": affection,
-            "relationship_phase": phase,
-            "mood": user["mood"]
-        })
+        update_user(
+            user_id,
+            {
+                "affection": affection,
+                "relationship_phase": phase,
+                "mood": user["mood"]
+            }
+        )
 
     except Exception as e:
 
-        print("ERROR:", e)
+        print("MESSAGE ERROR:", e)
 
         try:
+
             await update.message.reply_text(
                 "baby my brain lagged 😭"
             )
+
         except:
             pass
 
@@ -216,18 +238,18 @@ telegram_app.add_handler(
 
 def main():
 
-    print("AI GF BOT STARTED ❤️")
+    print("AI GF BOT RUNNING ❤️")
 
-    # START BACKGROUND SCHEDULER
+    # START SCHEDULER
     start_scheduler()
 
-    # START TELEGRAM POLLING
+    # START BOT
     telegram_app.run_polling(
         drop_pending_updates=True
     )
 
 # =========================
-# RUN
+# START
 # =========================
 
 if __name__ == "__main__":
