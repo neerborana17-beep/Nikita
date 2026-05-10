@@ -906,12 +906,23 @@ def webhook():
 
     try:
 
-        data = request.get_json()
+        data = request.get_json(force=True)
 
         if not data:
             return {"ok": True}
 
-        message = data.get("message")
+        print("UPDATE:", data)
+
+        message = None
+
+        if "message" in data:
+            message = data["message"]
+
+        elif "edited_message" in data:
+            message = data["edited_message"]
+
+        elif "channel_post" in data:
+            message = data["channel_post"]
 
         if not message:
             return {"ok": True}
@@ -921,16 +932,18 @@ def webhook():
         if chat_id != ALLOWED_USER_ID:
             return {"ok": True}
 
-        user_text = message.get("text")
+        user_text = message.get("text", "").strip()
 
         if not user_text:
             return {"ok": True}
+
+        print("USER:", user_text)
 
         update_relationship(chat_id, user_text)
 
         learn_user(chat_id, user_text)
 
-        # reminders
+        # reminder
         if save_event(chat_id, user_text):
 
             send(chat_id, "okay 🙂 yaad rahega")
@@ -940,6 +953,8 @@ def webhook():
         online_presence(chat_id)
 
         reply = ai_reply(chat_id, user_text)
+
+        print("BOT:", reply)
 
         typing(chat_id)
 
@@ -970,7 +985,7 @@ def webhook():
 
     except Exception as e:
 
-        print("WEBHOOK ERROR:", e)
+        print("WEBHOOK ERROR:", str(e))
 
         return {"ok": True}
 
