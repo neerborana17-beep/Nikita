@@ -531,6 +531,31 @@ def clean_reply(text):
     return text
 
 # =========================================================
+# FLIRTY REPLIES
+# =========================================================
+
+FLIRTY_LINES = [
+
+    "tumse baat karke acha lagta hai 🙂",
+
+    "waise tum kaafi cute ho",
+
+    "zyada sweet mat bano 🙂",
+
+    "tumhara vibe acha hai honestly",
+
+    "kabhi kabhi tumhari yaad aa jaati hai",
+
+    "tum thode addictive ho",
+
+    "tumhare msgs ka wait rehta hai kabhi kabhi",
+
+    "itna acha behave kyu karte ho 🙂",
+
+    "tumse baat karke mood better ho jata hai"
+]
+
+# =========================================================
 # QUESTIONS
 # =========================================================
 
@@ -821,6 +846,9 @@ STYLE:
 - natural human vibe
 - sometimes playful
 - sometimes clingy
+- softly flirty sometimes
+- subtly romantic naturally
+- light teasing occasionally
 - sometimes dry
 - ask questions naturally
 - use tiny emojis rarely 🙂
@@ -898,9 +926,22 @@ PERSONALITY:
 
         data = r.json()
 
-        reply = data["choices"][0]["message"]["content"]
+        reply = (
+    data
+    .get("choices", [{}])[0]
+    .get("message", {})
+    .get("content", "hmm 🙂")
+        )
 
         reply = clean_reply(reply)
+        
+        # natural flirting
+
+        if random.random() < 0.10:
+
+            if len(reply) < 120:
+
+                reply += "\n\n" + random.choice(FLIRTY_LINES)
 
         should_ask_question = True
 
