@@ -445,6 +445,24 @@ def clean_reply(text):
     if not text:
         return "hmm 🙂"
 
+    dry_replies = [
+
+        "hmm 🙂",
+
+        "acha acha",
+
+        "hehe",
+
+        "cute ho",
+
+        "sahi hai",
+
+        "aww 🙂"
+    ]
+
+    if random.random() < 0.08:
+        return random.choice(dry_replies)
+
     text = text.replace("*", "")
     text = text.replace('"', "")
     text = text.strip()
@@ -520,21 +538,29 @@ QUESTIONS = [
 
     "waise aaj mood kaisa hai",
 
-    "tum overthink zyada karte ho?",
+    "abhi kya kar rahe ho",
 
-    "bachpan ki koi funny memory hai?",
+    "khana acha tha?",
 
-    "tum emotionally jaldi attach hote ho?",
+    "aaj tired lag rahe",
 
-    "raat me usually kya sochte ho?",
+    "study kaisi chal rahi",
 
-    "tumhara comfort person kaun hai?",
+    "raat me late tak jagte ho kya",
 
-    "aaj ka best moment konsa tha?",
+    "music sunte ho abhi bhi?",
 
-    "tum introvert ho ya extrovert?",
+    "aaj weather bhi ajeeb hai",
 
-    "abhi kya soch rahe ho?"
+    "tum zyada call person ho ya text?",
+
+    "waise tum cute ho thode 🙂",
+
+    "aaj ka best part kya tha",
+
+    "abhi free ho ya busy",
+
+    "waise overthinking kam hui?"
 ]
 
 def get_unique_question(chat_id):
@@ -789,6 +815,8 @@ STYLE:
 - no robotic language
 - no huge paragraphs
 - no therapist tone
+- avoid sounding like teacher or parent
+- avoid advice tone unless user asks
 - complete sentences
 - natural human vibe
 - sometimes playful
@@ -808,6 +836,9 @@ BETTER STYLE:
 - "tv dekh rahi thi"
 - "bas normal khana tha"
 - "thoda ajeeb mood hai"
+- "bas chill kar rahi thi"
+- "just random stuff"
+- "kuch khas nahi"
 
 RELATIONSHIP:
 - level: {relationship}/10
@@ -875,16 +906,27 @@ PERSONALITY:
 
         task_keywords = [
 
-            "msg karna",
-            "yaad dilana",
-            "utha dena",
-            "busy",
-            "later",
-            "baad me",
-            "ruk",
-            "wait"
+    "msg karna",
+    "yaad dilana",
+    "utha dena",
+    "busy",
+    "later",
+    "baad me",
+    "ruk",
+    "wait",
+    "bye",
+    "milte hain",
+    "gn",
+    "good night",
+    "so raha",
+    "study",
+    "padhai",
+    "jaa raha",
+    "ja rahi",
+    "kaam",
+    "offline",
+    "brb"
         ]
-
         if any(x in user_text.lower() for x in task_keywords):
 
             should_ask_question = False
@@ -972,7 +1014,7 @@ def auto_message(chat_id):
 
         ).total_seconds()
 
-        if diff < random.randint(5000, 11000):
+        if diff < random.randint(14000, 26000):
             return
 
     recent = mem.get("recent_auto_msgs", [])
